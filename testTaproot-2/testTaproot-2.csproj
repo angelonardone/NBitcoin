@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <RootNamespace>testTaproot_2</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <DefineConstants>$(DefineConstants);SECP256K1_LIB</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\NBitcoin.Secp256k1\NBitcoin.Secp256k1.csproj" />
+    <ProjectReference Include="..\NBitcoin.TestFramework\NBitcoin.TestFramework.csproj" />
+    <ProjectReference Include="..\NBitcoin\NBitcoin.csproj" />
+  </ItemGroup>
+
+</Project>

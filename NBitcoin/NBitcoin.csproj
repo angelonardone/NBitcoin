@@ -112,4 +112,8 @@
 	<PropertyGroup>
 	  <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 	</PropertyGroup>
+
+	<PropertyGroup Condition="'$(Configuration)|$(TargetFramework)|$(Platform)'=='Release|net6.0|AnyCPU'">
+	  <DefineConstants>$(DefineConstants);NETCORE;HAS_SPAN;NO_BC;SECP256K1_LIB</DefineConstants>
+	</PropertyGroup>
 </Project>
