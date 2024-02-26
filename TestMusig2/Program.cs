@@ -16,10 +16,13 @@ namespace NBitcoinTraining
 		static void Main(string[] args)
 		{
 			//musig_MusigTest();
-			musig_MusigTest2();
+			//musig_MusigTest2();
 			//TestVectorsCore();
 			//CanParseAndGeneratePayToTaprootScripts();
 			//CanSignUsingTaproot();
+			//TaptreeBuilderTests();
+			//musig_2_of_3_test();
+			musig_2_of_3_test1();
 		}
 
 		static void musig_MusigTest()
@@ -144,7 +147,8 @@ namespace NBitcoinTraining
 
 			var mainAggregatedECPubkey = ECPubKey.MusigAggregate(pubKeys);
 
-
+			//////////////////////// Aggregated PUB KEY created ///////////////////////////
+			///////////////////////////////////////////////////////////////////////////////
 			
 			
 			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
@@ -174,10 +178,11 @@ namespace NBitcoinTraining
 				spender.Outputs.Add(Money.Coins(0.7m), dest);
 				spender.Outputs.Add(Money.Coins(0.2999000m), addr);
 
-				var sighash = TaprootSigHash.Default;
-				var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut }, new TaprootExecutionData(0) { SigHash = sighash });
-				//var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut }, new TaprootExecutionData(0));
+				//var sighash = TaprootSigHash.Default;
+				//var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut }, new TaprootExecutionData(0) { SigHash = sighash });
 
+				var sighash = TaprootSigHash.All | TaprootSigHash.AnyoneCanPay;
+				var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut }, new TaprootExecutionData(0) { SigHash = sighash });
 
 
 				for (int i = 0; i < peers; i++)
@@ -215,9 +220,146 @@ namespace NBitcoinTraining
 
 
 				var sig = new SchnorrSignature(schnorrSig.ToBytes());
+				var trSign = new TaprootSignature(sig, sighash);
 				Console.WriteLine("Verify signtature of Aggregated pub key : " + Aggretaedpubkey.VerifySignature(hash, sig));
 				Console.WriteLine("Veriry signature on address: " + addr.PubKey.VerifySignature(hash, sig));
 
+				spender.Inputs[0].WitScript = new WitScript(Op.GetPushOp(trSign.ToBytes()));
+				Console.WriteLine(spender.ToString());
+				rpc.SendRawTransaction(spender);
+
+			}
+			
+
+		}
+
+		static void musig_2_of_3_test()
+		{
+
+			var msg32 = Encoders.Hex.DecodeData("502c616d9910774e00edb71f01b951962cc44ec67072757767f3906ff82ebfe8");
+			var tweak = Encoders.Hex.DecodeData("f24d386cccd01e815007b3a6278151d51a4bbf8835813120cfa0f937cb82f021");
+			// adaptor is a separate Private Key revealed after "second signature"
+			byte[] bytes_adaptor = Encoders.Hex.DecodeData("c0655fae21a8b7fae19cfeac6135ded8090920f9640a148b0fd5ff9c15c6e948");
+			var adaptor = ctx.CreateECPrivKey(bytes_adaptor);
+			var peers = 3;
+			var privKeys = new ECPrivKey[peers];
+			var privNonces = new MusigPrivNonce[peers];
+			var pubNonces = new MusigPubNonce[peers];
+			var musig = new MusigContext[peers];
+			var sigs = new MusigPartialSignature[peers];
+			var pubKeys = new ECPubKey[peers];
+
+			// Private KEYs
+			byte[] bytes1 = Encoders.Hex.DecodeData("c0655fae21a8b7fae19cfeac6135ded8090920f9640a148b0fd5ff9c15c6e948");
+			privKeys[0] = ctx.CreateECPrivKey(bytes1);
+			byte[] bytes2 = Encoders.Hex.DecodeData("c8222b32a0189e5fa1f46700a9d0438c00feb279f0f2087cafe6f5b5ce9d224a");
+			privKeys[1] = ctx.CreateECPrivKey(bytes2);
+			byte[] bytes3 = Encoders.Hex.DecodeData("b6f2920002873556366ad9f9a44711e4f34b596a892bd175427071e4064a89cc");
+			privKeys[2] = ctx.CreateECPrivKey(bytes3);
+
+			var peers_2 = 2;
+			var pairPubKeys = new ECPubKey[peers_2];
+
+			pairPubKeys[0] = privKeys[0].CreatePubKey();
+			pairPubKeys[1] = privKeys[1].CreatePubKey();
+			var pubKey_0_to_1 = ECPubKey.MusigAggregate(pairPubKeys);
+			var TRpubKey_0_to_1 = new TaprootPubKey(pubKey_0_to_1.ToXOnlyPubKey().ToBytes());
+			Console.WriteLine("TRpubKey_0_to_1: " + TRpubKey_0_to_1.ToString());
+
+			pairPubKeys[0] = privKeys[0].CreatePubKey();
+			pairPubKeys[1] = privKeys[2].CreatePubKey();
+			var pubKey_0_to_2 = ECPubKey.MusigAggregate(pairPubKeys);
+			var TRpubKey_0_to_2 = new TaprootPubKey(pubKey_0_to_2.ToXOnlyPubKey().ToBytes());
+			Console.WriteLine("TRpubKey_0_to_2: " + TRpubKey_0_to_2.ToString());
+
+			pairPubKeys[0] = privKeys[1].CreatePubKey();
+			pairPubKeys[1] = privKeys[2].CreatePubKey();
+			var pubKey_1_to_2 = ECPubKey.MusigAggregate(pairPubKeys);
+			var TRpubKey_1_to_2 = new TaprootPubKey(pubKey_1_to_2.ToXOnlyPubKey().ToBytes());
+			Console.WriteLine("TRpubKey_1_to_2: " + TRpubKey_1_to_2.ToString());
+
+			// Create a tree as shown below
+			// For example, imagine this tree:
+			// pubKey1-2 is at depth 1 meanting pubKey0-1 and pubKey0-2 are at depth 2
+			//                                       .....
+			//                                     /       \
+			//                                    /\       pubKey1-2
+			//                                   /  \       
+			//                                  /    \
+			//                                 /      \
+			//                           pubKey0-1   pubKey0-2         
+
+			// this is the default key/address I could spend the coins either using this key or the taproot script tree
+			var keySpend = new Key(Encoders.Hex.DecodeData("c0655fae21a8b7fae19cfeac6135ded8090920f9640a148b0fd5ff9c15c6e948"));
+			var KeySpendinternalPubKey = keySpend.PubKey.TaprootInternalKey;
+			var builder = new TaprootBuilder();
+
+			builder.AddLeaf(1, Script.FromBytesUnsafe(pubKey_1_to_2.ToBytes()));
+			builder.AddLeaf(2, Script.FromBytesUnsafe(pubKey_0_to_1.ToBytes()));
+			builder.AddLeaf(2, Script.FromBytesUnsafe(pubKey_0_to_2.ToBytes()));
+
+			var treeInfo = builder.Finalize(KeySpendinternalPubKey);
+			var outputKey = treeInfo.OutputPubKey;
+			Console.WriteLine("outputKey: " + outputKey.ToString());
+
+			var Scripts = new[] {
+				Script.FromBytesUnsafe(pubKey_1_to_2.ToBytes()),
+				Script.FromBytesUnsafe(pubKey_0_to_1.ToBytes()),
+				Script.FromBytesUnsafe(pubKey_0_to_2.ToBytes())
+				};
+
+			Console.WriteLine("IsKeyPathOnlySpend: " + treeInfo.IsKeyPathOnlySpend);
+
+
+			var internalPubl_key_block = TaprootInternalPubKey.Parse("93c7378d96518a75448821c4f7c8f4bae7ce60f804d03d1f0628dd5dd0f5de51");
+			Console.WriteLine("internalPubl_key_block 1: " + internalPubl_key_block.ToString());
+
+			foreach (var script in Scripts )
+			{
+				var ctrlBlock = treeInfo.GetControlBlock(script, (byte)TaprootConstants.TAPROOT_LEAF_TAPSCRIPT);
+				Console.WriteLine("does verify? " + ctrlBlock.VerifyTaprootCommitment(outputKey, script));
+				Console.WriteLine("InternalPubKey: " + ctrlBlock.InternalPubKey);
+				internalPubl_key_block = ctrlBlock.InternalPubKey;
+
+			}
+
+			Console.WriteLine("internalPubl_key_block 2: " + internalPubl_key_block.ToString());
+
+
+
+			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
+			{
+
+				
+
+				var rpc = nodeBuilder.CreateNode().CreateRPCClient();
+				nodeBuilder.StartAll();
+				rpc.Generate(102);
+
+				//var addr = outputKey.GetAddress(Network.RegTest);
+				var addr = internalPubl_key_block.GetTaprootFullPubKey().GetAddress(Network.RegTest);
+
+				rpc.Generate(1);
+
+
+				var txid = rpc.SendToAddress(addr, Money.Coins(1.0m));
+
+				var tx = rpc.GetRawTransaction(txid);
+				var spentOutput = tx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == addr.ScriptPubKey);
+
+				var spender = nodeBuilder.Network.CreateTransaction();
+				spender.Inputs.Add(new OutPoint(tx, spentOutput.N));
+
+				var dest = rpc.GetNewAddress();
+				spender.Outputs.Add(Money.Coins(0.7m), dest);
+				spender.Outputs.Add(Money.Coins(0.2999000m), addr);
+
+				var sighash = TaprootSigHash.All | TaprootSigHash.AnyoneCanPay;
+				var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut }, new TaprootExecutionData(0) { SigHash = sighash });
+				var sig = keySpend.SignTaprootKeySpend(hash, sighash);
+
+				Console.WriteLine("Veriry signature: " + addr.PubKey.VerifySignature(hash, sig.SchnorrSignature));
+				Console.WriteLine("Veriry signature 2: " + internalPubl_key_block.VerifyTaproot(hash, null, sig.SchnorrSignature));
 				spender.Inputs[0].WitScript = new WitScript(Op.GetPushOp(sig.ToBytes()));
 				Console.WriteLine(spender.ToString());
 				rpc.SendRawTransaction(spender);
@@ -225,6 +367,187 @@ namespace NBitcoinTraining
 			}
 			
 
+		}
+
+		static void musig_2_of_3_test1()
+		{
+
+			var msg32 = Encoders.Hex.DecodeData("502c616d9910774e00edb71f01b951962cc44ec67072757767f3906ff82ebfe8");
+			var tweak = Encoders.Hex.DecodeData("f24d386cccd01e815007b3a6278151d51a4bbf8835813120cfa0f937cb82f021");
+			// adaptor is a separate Private Key revealed after "second signature"
+			byte[] bytes_adaptor = Encoders.Hex.DecodeData("c0655fae21a8b7fae19cfeac6135ded8090920f9640a148b0fd5ff9c15c6e948");
+			var adaptor = ctx.CreateECPrivKey(bytes_adaptor);
+			var peers = 3;
+			var privKeys = new ECPrivKey[peers];
+			var privNonces = new MusigPrivNonce[peers];
+			var pubNonces = new MusigPubNonce[peers];
+			var musig = new MusigContext[peers];
+			var sigs = new MusigPartialSignature[peers];
+			var pubKeys = new ECPubKey[peers];
+
+			// Private KEYs
+			byte[] bytes1 = Encoders.Hex.DecodeData("c0655fae21a8b7fae19cfeac6135ded8090920f9640a148b0fd5ff9c15c6e948");
+			privKeys[0] = ctx.CreateECPrivKey(bytes1);
+			byte[] bytes2 = Encoders.Hex.DecodeData("c8222b32a0189e5fa1f46700a9d0438c00feb279f0f2087cafe6f5b5ce9d224a");
+			privKeys[1] = ctx.CreateECPrivKey(bytes2);
+			byte[] bytes3 = Encoders.Hex.DecodeData("b6f2920002873556366ad9f9a44711e4f34b596a892bd175427071e4064a89cc");
+			privKeys[2] = ctx.CreateECPrivKey(bytes3);
+
+			var peers_2 = 2;
+			var pairPubKeys = new ECPubKey[peers_2];
+
+			pairPubKeys[0] = privKeys[0].CreatePubKey();
+			pairPubKeys[1] = privKeys[1].CreatePubKey();
+			var pubKey_0_to_1 = ECPubKey.MusigAggregate(pairPubKeys);
+			var TRpubKey_0_to_1 = new TaprootPubKey(pubKey_0_to_1.ToXOnlyPubKey().ToBytes());
+			Console.WriteLine("TRpubKey_0_to_1: " + TRpubKey_0_to_1.ToString());
+
+			pairPubKeys[0] = privKeys[0].CreatePubKey();
+			pairPubKeys[1] = privKeys[2].CreatePubKey();
+			var pubKey_0_to_2 = ECPubKey.MusigAggregate(pairPubKeys);
+			var TRpubKey_0_to_2 = new TaprootPubKey(pubKey_0_to_2.ToXOnlyPubKey().ToBytes());
+			Console.WriteLine("TRpubKey_0_to_2: " + TRpubKey_0_to_2.ToString());
+
+			pairPubKeys[0] = privKeys[1].CreatePubKey();
+			pairPubKeys[1] = privKeys[2].CreatePubKey();
+			var pubKey_1_to_2 = ECPubKey.MusigAggregate(pairPubKeys);
+			var TRpubKey_1_to_2 = new TaprootPubKey(pubKey_1_to_2.ToXOnlyPubKey().ToBytes());
+			Console.WriteLine("TRpubKey_1_to_2: " + TRpubKey_1_to_2.ToString());
+
+			// Create a tree as shown below
+			// For example, imagine this tree:
+			// pubKey1-2 is at depth 1 meanting pubKey0-1 and pubKey0-2 are at depth 2
+			//                                       .....
+			//                                     /       \
+			//                                    /\       pubKey1-2
+			//                                   /  \       
+			//                                  /    \
+			//                                 /      \
+			//                           pubKey0-1   pubKey0-2         
+
+			// this is the default key/address I could spend the coins either using this key or the taproot script tree
+
+
+			var howManyScripts = 3;
+			var Scripts = new Script[howManyScripts];
+			Scripts[0] = Script.FromBytesUnsafe(pubKey_1_to_2.ToBytes());
+			Scripts[1] = Script.FromBytesUnsafe(pubKey_0_to_1.ToBytes());
+			Scripts[2] = Script.FromBytesUnsafe(pubKey_0_to_2.ToBytes());
+
+			var keySpend = new Key(Encoders.Hex.DecodeData("c0655fae21a8b7fae19cfeac6135ded8090920f9640a148b0fd5ff9c15c6e948"));
+			var KeySpendinternalPubKey = keySpend.PubKey.TaprootInternalKey;
+			var builder = new TaprootBuilder();
+
+
+			builder.AddLeaf(1, Scripts[0]);
+			builder.AddLeaf(2, Scripts[1]);
+			builder.AddLeaf(2, Scripts[2]);
+
+			var treeInfo = builder.Finalize(KeySpendinternalPubKey);
+			var outputKey = treeInfo.OutputPubKey;
+			Console.WriteLine("outputKey: " + outputKey.ToString());
+
+
+
+
+			Console.WriteLine("IsKeyPathOnlySpend: " + treeInfo.IsKeyPathOnlySpend);
+
+			ControlBlock ctrlBlock = null;
+			TaprootInternalPubKey internalPubl_key_block = null;
+
+			for (int i = 0; i <= howManyScripts; i++)
+			{
+				ctrlBlock = treeInfo.GetControlBlock(Scripts[1], (byte)TaprootConstants.TAPROOT_LEAF_TAPSCRIPT);
+				Console.WriteLine("does verify? " + ctrlBlock.VerifyTaprootCommitment(outputKey, Scripts[1]));
+				Console.WriteLine("InternalPubKey: " + ctrlBlock.InternalPubKey);
+			}
+
+			if (ctrlBlock != null)
+			{
+				internalPubl_key_block = ctrlBlock.InternalPubKey;
+			}
+			else
+			{
+				// Handle the case where ctrlBlock is null
+				Console.WriteLine("ctrlBlock is null");
+			}
+
+
+
+
+
+
+			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
+			{
+
+
+
+				var rpc = nodeBuilder.CreateNode().CreateRPCClient();
+				nodeBuilder.StartAll();
+				rpc.Generate(102);
+
+				//var addr = outputKey.GetAddress(Network.RegTest);
+				var addr = internalPubl_key_block.GetTaprootFullPubKey().GetAddress(Network.RegTest);
+
+				rpc.Generate(1);
+
+
+				var txid = rpc.SendToAddress(addr, Money.Coins(1.0m));
+
+				var tx = rpc.GetRawTransaction(txid);
+				var spentOutput = tx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == addr.ScriptPubKey);
+
+				var spender = nodeBuilder.Network.CreateTransaction();
+				spender.Inputs.Add(new OutPoint(tx, spentOutput.N));
+
+				var dest = rpc.GetNewAddress();
+				spender.Outputs.Add(Money.Coins(0.7m), dest);
+				spender.Outputs.Add(Money.Coins(0.2999000m), addr);
+
+				var sighash = TaprootSigHash.All | TaprootSigHash.AnyoneCanPay;
+				var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut }, new TaprootExecutionData(0) { SigHash = sighash });
+				var sig = keySpend.SignTaprootKeySpend(hash, sighash);
+
+				Console.WriteLine("Veriry signature: " + addr.PubKey.VerifySignature(hash, sig.SchnorrSignature));
+				Console.WriteLine("Veriry signature 2: " + internalPubl_key_block.VerifyTaproot(hash, null, sig.SchnorrSignature));
+				spender.Inputs[0].WitScript = new WitScript(Op.GetPushOp(sig.ToBytes()));
+				Console.WriteLine(spender.ToString());
+				rpc.SendRawTransaction(spender);
+
+			}
+		}
+		static void TaptreeBuilderTests()
+		{
+			var internalPubKey = TaprootInternalPubKey.Parse("93c7378d96518a75448821c4f7c8f4bae7ce60f804d03d1f0628dd5dd0f5de51");
+			var builder = new TaprootBuilder();
+			// Create a tree as shown below
+			// For example, imagine this tree:
+			// A, B , C are at depth 2 and D,E are at 3
+			//                                       ....
+			//                                     /      \
+			//                                    /\      /\
+			//                                   /  \    /  \
+			//                                  A    B  C  / \
+			//                                            D   E
+			var a = Script.FromHex("51");
+			var b = Script.FromHex("52");
+			var c = Script.FromHex("53");
+			var d = Script.FromHex("54");
+			var e = Script.FromHex("55");
+			builder
+				.AddLeaf(2, a)
+				.AddLeaf(2, b)
+				.AddLeaf(2, c)
+				.AddLeaf(3, d);
+
+			builder.AddLeaf(3, e);
+			var treeInfo = builder.Finalize(internalPubKey);
+			var outputKey = treeInfo.OutputPubKey;
+			foreach (var script in new[] { a, b, c, d, e })
+			{
+				var ctrlBlock = treeInfo.GetControlBlock(script, (byte)TaprootConstants.TAPROOT_LEAF_TAPSCRIPT);
+				Console.WriteLine("does verify? " + ctrlBlock.VerifyTaprootCommitment(outputKey, script));
+			}
 		}
 
 		static void TestVectorsCore()
@@ -255,8 +578,9 @@ namespace NBitcoinTraining
 			Console.WriteLine(treeInfo.InternalPubKey.GetTaprootFullPubKey().ToString());
 			Console.WriteLine(treeInfo.OutputPubKey.ToString());
 			Console.WriteLine(treeInfo.OutputPubKey.ScriptPubKey.ToString());
-			var expected = new[] { ("51", 3), ("52", 2), ("53", 2), ("54", 2), ("55", 3) };
 			/*
+			var expected = new[] { ("51", 3), ("52", 2), ("53", 2), ("54", 2), ("55", 3) };
+
 			foreach (var t in expected)
 			{
 				var (script, expectedLength) = t;
@@ -341,8 +665,7 @@ namespace NBitcoinTraining
 						spender.Outputs.Add(Money.Coins(0.2999000m), addr);
 
 						var sighash = hashType | (anyoneCanPay ? TaprootSigHash.AnyoneCanPay : 0);
-						var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut },
-																 new TaprootExecutionData(0) { SigHash = sighash });
+						var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut }, new TaprootExecutionData(0) { SigHash = sighash });
 						var sig = key.SignTaprootKeySpend(hash, sighash);
 
 						Console.WriteLine("Veriry signature: " + addr.PubKey.VerifySignature(hash, sig.SchnorrSignature));
