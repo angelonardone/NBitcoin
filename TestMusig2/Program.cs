@@ -454,17 +454,20 @@ namespace NBitcoinTraining
 
 			ControlBlock ctrlBlock = null;
 			TaprootInternalPubKey internalPubl_key_block = null;
+			TaprootFullPubKey salida = null;
 
-			for (int i = 0; i <= howManyScripts; i++)
+			for (int i = 0; i < howManyScripts; i++)
 			{
-				ctrlBlock = treeInfo.GetControlBlock(Scripts[1], (byte)TaprootConstants.TAPROOT_LEAF_TAPSCRIPT);
-				Console.WriteLine("does verify? " + ctrlBlock.VerifyTaprootCommitment(outputKey, Scripts[1]));
+				ctrlBlock = treeInfo.GetControlBlock(Scripts[i], (byte)TaprootConstants.TAPROOT_LEAF_TAPSCRIPT);
+				Console.WriteLine("does verify? " + ctrlBlock.VerifyTaprootCommitment(outputKey, Scripts[i]));
 				Console.WriteLine("InternalPubKey: " + ctrlBlock.InternalPubKey);
 			}
 
 			if (ctrlBlock != null)
 			{
 				internalPubl_key_block = ctrlBlock.InternalPubKey;
+				salida = internalPubl_key_block.GetTaprootFullPubKey(treeInfo.MerkleRoot); // add merkleroot of the scripts
+
 			}
 			else
 			{
@@ -487,7 +490,8 @@ namespace NBitcoinTraining
 				rpc.Generate(102);
 
 				//var addr = outputKey.GetAddress(Network.RegTest);
-				var addr = internalPubl_key_block.GetTaprootFullPubKey().GetAddress(Network.RegTest);
+				//var addr = internalPubl_key_block.GetTaprootFullPubKey().GetAddress(Network.RegTest);
+				var addr = salida.GetAddress(Network.RegTest);
 
 				rpc.Generate(1);
 
@@ -506,10 +510,10 @@ namespace NBitcoinTraining
 
 				var sighash = TaprootSigHash.All | TaprootSigHash.AnyoneCanPay;
 				var hash = spender.GetSignatureHashTaproot(new[] { spentOutput.TxOut }, new TaprootExecutionData(0) { SigHash = sighash });
-				var sig = keySpend.SignTaprootKeySpend(hash, sighash);
+				var sig = keySpend.SignTaprootKeySpend(hash, treeInfo.MerkleRoot, sighash);
 
 				Console.WriteLine("Veriry signature: " + addr.PubKey.VerifySignature(hash, sig.SchnorrSignature));
-				Console.WriteLine("Veriry signature 2: " + internalPubl_key_block.VerifyTaproot(hash, null, sig.SchnorrSignature));
+				Console.WriteLine("Veriry signature 2: " + internalPubl_key_block.VerifyTaproot(hash, treeInfo.MerkleRoot, sig.SchnorrSignature));
 				spender.Inputs[0].WitScript = new WitScript(Op.GetPushOp(sig.ToBytes()));
 				Console.WriteLine(spender.ToString());
 				rpc.SendRawTransaction(spender);
