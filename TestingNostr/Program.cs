@@ -32,8 +32,8 @@ namespace NBitcoinTraining
 			//produceJson();
 			//test_nostr();
 			// test_event();
-			//test_event_nbitcoin();
-			work_ec();
+			test_event_nbitcoin();
+			//work_ec();
 
 		}
 

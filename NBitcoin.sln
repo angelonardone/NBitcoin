@@ -32,7 +32,9 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "testTaproot-2", "testTaproo
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingNostr", "TestingNostr\TestingNostr.csproj", "{F6FCAE96-4A6C-4541-AC23-966C974D7667}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestMusig2", "TestMusig2\TestMusig2.csproj", "{B81768D7-EE46-43F3-B7C9-1E0397A1D74B}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestMusig2", "TestMusig2\TestMusig2.csproj", "{B81768D7-EE46-43F3-B7C9-1E0397A1D74B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestMusig3", "TestMusig3\TestMusig3.csproj", "{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -104,6 +106,10 @@ Global
 		{B81768D7-EE46-43F3-B7C9-1E0397A1D74B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B81768D7-EE46-43F3-B7C9-1E0397A1D74B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B81768D7-EE46-43F3-B7C9-1E0397A1D74B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
