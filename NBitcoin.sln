@@ -34,7 +34,9 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingNostr", "TestingNost
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestMusig2", "TestMusig2\TestMusig2.csproj", "{B81768D7-EE46-43F3-B7C9-1E0397A1D74B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestMusig3", "TestMusig3\TestMusig3.csproj", "{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestMusig3", "TestMusig3\TestMusig3.csproj", "{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MuSig4", "MuSig4\MuSig4.csproj", "{817380AA-9D05-4728-8BD6-E5626D445C45}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -110,6 +112,10 @@ Global
 		{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{817380AA-9D05-4728-8BD6-E5626D445C45}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{817380AA-9D05-4728-8BD6-E5626D445C45}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{817380AA-9D05-4728-8BD6-E5626D445C45}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{817380AA-9D05-4728-8BD6-E5626D445C45}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
