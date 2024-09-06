@@ -36,7 +36,11 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestMusig2", "TestMusig2\Te
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestMusig3", "TestMusig3\TestMusig3.csproj", "{307F5EDB-E4D3-4882-BD87-AB0CED65AE8C}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MuSig4", "MuSig4\MuSig4.csproj", "{817380AA-9D05-4728-8BD6-E5626D445C45}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MuSig4", "MuSig4\MuSig4.csproj", "{817380AA-9D05-4728-8BD6-E5626D445C45}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingElectrum", "TestingElectrum\TestingElectrum.csproj", "{D8EE736D-E0EA-426C-BA77-ED1CEE136DCA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestAdaptor", "TestAdaptor\TestAdaptor.csproj", "{ACC27C12-E258-4059-AE63-6CD95C91C339}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -116,6 +120,14 @@ Global
 		{817380AA-9D05-4728-8BD6-E5626D445C45}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{817380AA-9D05-4728-8BD6-E5626D445C45}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{817380AA-9D05-4728-8BD6-E5626D445C45}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D8EE736D-E0EA-426C-BA77-ED1CEE136DCA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D8EE736D-E0EA-426C-BA77-ED1CEE136DCA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D8EE736D-E0EA-426C-BA77-ED1CEE136DCA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D8EE736D-E0EA-426C-BA77-ED1CEE136DCA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ACC27C12-E258-4059-AE63-6CD95C91C339}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ACC27C12-E258-4059-AE63-6CD95C91C339}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ACC27C12-E258-4059-AE63-6CD95C91C339}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ACC27C12-E258-4059-AE63-6CD95C91C339}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
