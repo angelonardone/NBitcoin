@@ -198,7 +198,7 @@ namespace NBitcoin.BuilderExtensions
 			ops.Add(OpcodeType.OP_0);
 			for (int i = 0; i < multiSigParams.PubKeys.Length; i++)
 			{
-				if (sigs[i] is TransactionSignature sig)
+				if (sigs[i] is ITransactionSignature sig)
 					ops.Add(Op.GetPushOp(sig.ToBytes()));
 				else
 					ops.Add(OpcodeType.OP_0);
