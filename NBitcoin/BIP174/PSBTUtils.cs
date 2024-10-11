@@ -52,7 +52,12 @@ namespace NBitcoin
 		}
 	}
 
-	internal class PubKeyComparer : IComparer<PubKey>
+	/// <summary>
+	/// Lexicographical comparison of public keys.
+	/// Use <see cref="PubKeyComparer.Instance"/> to get an instance of this class."/>
+	/// <see cref="IComparable{T}"/> implementation for <see cref="PubKey"/> is using this comparer.
+	/// </summary>
+	public class PubKeyComparer : IComparer<PubKey>
 	{
 		PubKeyComparer()
 		{
