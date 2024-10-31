@@ -40,7 +40,17 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MuSig4", "MuSig4\MuSig4.csp
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingElectrum", "TestingElectrum\TestingElectrum.csproj", "{D8EE736D-E0EA-426C-BA77-ED1CEE136DCA}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestAdaptor", "TestAdaptor\TestAdaptor.csproj", "{ACC27C12-E258-4059-AE63-6CD95C91C339}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestAdaptor", "TestAdaptor\TestAdaptor.csproj", "{ACC27C12-E258-4059-AE63-6CD95C91C339}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingNonces", "TestingNonces\TestingNonces.csproj", "{4B089FC6-70ED-4F26-869E-BDF60EAB1413}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingMuSigVerification", "TestingMuSigVerification\TestingMuSigVerification.csproj", "{F13CB19C-9484-41C9-B1BF-33183B793821}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingMuSigCreateSignatures", "TestingMuSigCreateSignatures\TestingMuSigCreateSignatures.csproj", "{FEFC8AA9-558A-4163-BF3D-7F6F6785F725}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestMusig2-2of2", "TestMusig2-2of2\TestMusig2-2of2.csproj", "{BE03CDF0-55CB-4C58-9FCF-18DCCAE97360}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestMusig1withTaprootSpendPath", "TestMusig1withTaprootSpendPath\TestMusig1withTaprootSpendPath.csproj", "{96318D88-56C4-4521-820D-1BC0E284C197}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -128,6 +138,26 @@ Global
 		{ACC27C12-E258-4059-AE63-6CD95C91C339}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{ACC27C12-E258-4059-AE63-6CD95C91C339}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{ACC27C12-E258-4059-AE63-6CD95C91C339}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4B089FC6-70ED-4F26-869E-BDF60EAB1413}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4B089FC6-70ED-4F26-869E-BDF60EAB1413}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4B089FC6-70ED-4F26-869E-BDF60EAB1413}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4B089FC6-70ED-4F26-869E-BDF60EAB1413}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F13CB19C-9484-41C9-B1BF-33183B793821}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F13CB19C-9484-41C9-B1BF-33183B793821}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F13CB19C-9484-41C9-B1BF-33183B793821}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F13CB19C-9484-41C9-B1BF-33183B793821}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FEFC8AA9-558A-4163-BF3D-7F6F6785F725}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FEFC8AA9-558A-4163-BF3D-7F6F6785F725}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FEFC8AA9-558A-4163-BF3D-7F6F6785F725}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FEFC8AA9-558A-4163-BF3D-7F6F6785F725}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BE03CDF0-55CB-4C58-9FCF-18DCCAE97360}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BE03CDF0-55CB-4C58-9FCF-18DCCAE97360}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BE03CDF0-55CB-4C58-9FCF-18DCCAE97360}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BE03CDF0-55CB-4C58-9FCF-18DCCAE97360}.Release|Any CPU.Build.0 = Release|Any CPU
+		{96318D88-56C4-4521-820D-1BC0E284C197}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{96318D88-56C4-4521-820D-1BC0E284C197}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{96318D88-56C4-4521-820D-1BC0E284C197}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{96318D88-56C4-4521-820D-1BC0E284C197}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

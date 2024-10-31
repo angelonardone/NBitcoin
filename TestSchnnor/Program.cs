@@ -32,6 +32,7 @@ namespace angeloNBitcoin
 			//Schnorr_sign_and_verify();
 			Schnorr_sign_and_verify_address();
 			//_ = CanBuildTaprootSingleSigTransactionsAsync();
+			//modified_Vector_1();
 		}
 
 		public static async Task CanBuildTaprootSingleSigTransactionsAsync()
@@ -247,6 +248,7 @@ namespace angeloNBitcoin
 			var expectedSig = new NBitcoin.Crypto.SchnorrSignature(Encoders.Hex.DecodeData("3eda64917a14d3d823345791e6648c592d2e86ae4e64b5f71fc7857138cbcec7b6c97385ffabab9b55d9027d4abe02b383d29211adb4702ffda7492bf63eeeaf"));
 			NBitcoin.TaprootAddress tapPubAddress = NBitcoin.TaprootAddress.Create("bc1pgxxyvcmdncdxs06cudd5yvmwwahaesaj6n3eu7st7x4sw9hrchaqjy33gs", network);
 			Console.WriteLine(tapPubAddress.ScriptPubKey);
+			Console.WriteLine("pub_key: " + privKey.PubKey.ToString());
 			Console.WriteLine("output_key: " + privKey.PubKey.GetTaprootFullPubKey());
 			Console.WriteLine("internal_key: " + privKey.PubKey.TaprootInternalKey);
 			Console.WriteLine($"AllPubKeys: {tapPubAddress.ScriptPubKey.GetAllPubKeys()}");
@@ -358,6 +360,34 @@ namespace angeloNBitcoin
 			Console.WriteLine(Encoders.Hex.EncodeData(expectedSig.ToBytes()));  
 			Console.WriteLine(Encoders.Hex.EncodeData(sig64.ToBytes()));        
 																				
+
+
+			var add = BitcoinAddress.Create("bc1pgxxyvcmdncdxs06cudd5yvmwwahaesaj6n3eu7st7x4sw9hrchaqjy33gs", Network.Main);
+			Console.WriteLine(add.ScriptPubKey.IsValid.ToString());
+
+		}
+
+		static void modified_Vector_1()
+		{
+
+			// secret Key
+			var key = new Key(Encoders.Hex.DecodeData("0000000000000000000000000000000000000000000000000000000000000003"));
+			var expectedpubkey = new TaprootInternalPubKey(Encoders.Hex.DecodeData("F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9"));
+			var aux = new uint256(Encoders.Hex.DecodeData("0000000000000000000000000000000000000000000000000000000000000000"));
+			var msg256 = new uint256(Encoders.Hex.DecodeData("0000000000000000000000000000000000000000000000000000000000000000"));
+			var expectedSig = new SchnorrSignature(Encoders.Hex.DecodeData("E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0"));
+
+			var pubkey = key.PubKey.TaprootInternalKey;
+			Console.WriteLine("Expected verification: " + expectedpubkey.VerifyTaproot(msg256, null, expectedSig).ToString());
+
+			var sig64 = key.SignTaprootKeySpend(msg256, null, aux, TaprootSigHash.Default).SchnorrSignature;
+			Console.WriteLine("Actual verification: " + pubkey.VerifyTaproot(msg256, null, sig64).ToString());
+
+			Console.WriteLine(expectedSig.Equals(sig64).ToString()); // should be true but it's false
+			Console.WriteLine(sig64.Equals(expectedSig).ToString()); // sould be true but it's falxe
+			Console.WriteLine(Encoders.Hex.EncodeData(expectedSig.ToBytes()));
+			Console.WriteLine(Encoders.Hex.EncodeData(sig64.ToBytes()));
+
 
 
 			var add = BitcoinAddress.Create("bc1pgxxyvcmdncdxs06cudd5yvmwwahaesaj6n3eu7st7x4sw9hrchaqjy33gs", Network.Main);
