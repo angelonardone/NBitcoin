@@ -183,6 +183,8 @@ namespace NBitcoinTraining
 				var result2 = validator2.ValidateInput(0);
 				Console.WriteLine(spender2.ToString());
 				Console.WriteLine($"verify second run? {result2.Error is null}");
+				PSBT psbt2 = PSBT.FromTransaction(spender2, Network.RegTest);
+				Console.WriteLine($"PSBT: {psbt2.ToString()}"); // no muestra los witness
 
 
 
