@@ -6,16 +6,12 @@ using System.Text;
 using Xunit;
 using NBitcoin.Secp256k1;
 using System.Reflection;
-using System.Runtime.CompilerServices;
 using Xunit.Abstractions;
-using System.Security.Cryptography;
 using System.IO;
 using NBitcoin.Crypto;
 using System.Threading.Tasks;
-using System.Runtime.InteropServices;
 using NBitcoin.Secp256k1.Musig;
 using NBitcoin.DataEncoders;
-using Microsoft.VisualStudio.TestPlatform.ObjectModel.Utilities;
 using Newtonsoft.Json.Linq;
 using Xunit.Sdk;
 
@@ -3966,7 +3962,7 @@ namespace NBitcoin.Tests
 
 			var ecPubKeys = ecPrivateKeys.Select(c => c.CreatePubKey()).ToArray();
 			var musig = new MusigContext(ecPubKeys, msg32);
-			var nonces = ecPubKeys.Select(c => musig.GenerateNonce(c)).ToArray();
+			var nonces = ecPrivateKeys.Select(c => musig.GenerateNonce(c)).ToArray();
 
 			var aggregatedKey = ECPubKey.MusigAggregate(ecPubKeys);
 
@@ -3984,15 +3980,15 @@ namespace NBitcoin.Tests
 			var builder = new TaprootBuilder();
 			// Add the scripts there
 			var treeInfo = builder.Finalize(new TaprootInternalPubKey(aggregatedKey.ToXOnlyPubKey().ToBytes()));
-			musig = new MusigContext(ecPubKeys, msg32);
+			musig = new MusigContext(ecPubKeys, msg32, ecPubKeys[0]);
 
 			// Sanity check that GenerateNonce do not reuse nonces
-			var n1 = musig.GenerateNonce(ecPubKeys[0]);
-			var n2 = musig.GenerateNonce(ecPubKeys[0]);
+			var n1 = musig.GenerateNonce();
+			var n2 = musig.GenerateNonce();
 			Assert.NotEqual(Encoders.Hex.EncodeData(n1.CreatePubNonce().ToBytes()), Encoders.Hex.EncodeData(n2.CreatePubNonce().ToBytes()));
 			//
-
-			nonces = ecPubKeys.Select(c => musig.GenerateNonce(c)).ToArray();
+			musig = new MusigContext(ecPubKeys, msg32);
+			nonces = ecPrivateKeys.Select(c => musig.GenerateNonce(c)).ToArray();
 			musig.Tweak(treeInfo.OutputPubKey.Tweak.Span);
 			musig.ProcessNonces(nonces.Select(n => n.CreatePubNonce()).ToArray());
 			sigs = ecPrivateKeys.Select((c, i) => musig.Sign(c, nonces[i])).ToArray();
@@ -4033,6 +4029,56 @@ namespace NBitcoin.Tests
 				AssertEx.EqualBytes(expected[0], sig.PubNonce.ToBytes());
 				AssertEx.EqualBytes(expected[1], sig.Signature.ToBytes());
 				Assert.True(ctx.Verify(sk.CreatePubKey(), sig.PubNonce, sig.Signature));
+			}
+		}
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		// https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#modifications-to-nonce-generation
+		public void musig_det()
+		{
+			var keys = Enumerable.Range(0, 5).Select(k => new ECPrivKey(random_scalar_order(), ctx, true)).ToArray();
+			var pks = keys.Select(k => k.CreatePubKey()).ToArray();
+			var aggKeys = ECPubKey.MusigAggregate(pks);
+			var nonces = new MusigPrivNonce[keys.Length];
+			var msg = RandomUtils.GetBytes(32);
+
+			int detSigner = 4;
+			for (int i = 0; i < keys.Length; i++)
+			{
+				if (i == detSigner)
+					continue;
+				var musig = new MusigContext(pks, msg, pks[i]);
+				nonces[i] = musig.GenerateNonce();
+			}
+
+			var sigs = new MusigPartialSignature[keys.Length];
+			var aggothernonce = MusigPubNonce.Aggregate(nonces.Where(n => n is not null).Select(n => n.CreatePubNonce()).ToArray());
+			var aggNonce = aggothernonce;
+
+			// The deterministic signer sign
+			{
+				var musigDet = new MusigContext(pks, msg, pks[detSigner]);
+				musigDet.Process(aggothernonce);
+				var s = musigDet.DeterministicSign(keys[detSigner]);
+				sigs[detSigner] = s.Signature;
+				aggNonce = MusigPubNonce.Aggregate([aggothernonce, s.PubNonce]);
+			}
+
+			for (int i = 0; i < keys.Length; i++)
+			{
+				if (i == detSigner)
+					continue;
+				var musig = new MusigContext(pks, msg, pks[i]);
+				musig.Process(aggNonce);
+				sigs[i] = musig.Sign(keys[i], nonces[i]);
+			}
+
+			for (int i = 0; i < keys.Length; i++)
+			{
+				var musig = new MusigContext(pks, msg, pks[i]);
+				musig.Process(aggNonce);
+				var fullSig = musig.AggregateSignatures(sigs);
+				Assert.True(aggKeys.ToXOnlyPubKey().SigVerifyBIP340(fullSig, msg));
 			}
 		}
 
@@ -4131,7 +4177,7 @@ namespace NBitcoin.Tests
 					invalidKeys = true;
 					new MusigContext(keys, msg, sk.CreatePubKey());
 					invalidKeys = false;
-					Assert.False(true, comment);
+					Assert.Fail(comment);
 				}
 				catch (Exception ex) when (!(ex is XunitException))
 				{
@@ -4139,19 +4185,19 @@ namespace NBitcoin.Tests
 					{
 						var err = item["error"]?["type"]?.Value<string>();
 						if (invalidKeys != (err == "value"))
-							Assert.False(true, comment);
+							Assert.Fail(comment);
 					}
 					else
 					{
 						var err = item["error"]?["contrib"]?.Value<string>();
 						if (invalidPubKey != (err == "pubkey"))
-							Assert.False(true, comment);
+							Assert.Fail(comment);
 						if (invalidNonceAgg != (err == "aggnonce"))
-							Assert.False(true, comment);
+							Assert.Fail(comment);
 						if (invalidNonce != (err == "pubnonce"))
-							Assert.False(true, comment);
+							Assert.Fail(comment);
 						if (invalidSecnonce != (err == null))
-							Assert.False(true, comment);
+							Assert.Fail(comment);
 					}
 				}
 			}
@@ -4476,6 +4522,7 @@ namespace NBitcoin.Tests
 			var pubkeys2 = GetArray<string>(root["pubkeys"]).Select(p => ECPubKey.Create(Encoders.Hex.DecodeData(p))).ToArray();
 			var sorted_pubkeys2 = GetArray<string>(root["sorted_pubkeys"]).Select(p => ECPubKey.Create(Encoders.Hex.DecodeData(p))).ToArray();
 			Array.Sort(pubkeys2);
+			AssertEx.CollectionEquals(pubkeys2, sorted_pubkeys2);
 		}
 
 		[Fact]
