@@ -904,12 +904,7 @@ namespace NBitcoin.RPC
 							}
 							return;
 						}
-						if (httpResponse.Content == null ||
-							(httpResponse.Content.Headers.ContentLength == null || httpResponse.Content.Headers.ContentLength.Value == 0) ||
-							!httpResponse.Content.Headers.ContentType.MediaType.Equals("application/json", StringComparison.Ordinal))
-						{
-							httpResponse.EnsureSuccessStatusCode(); // Let's throw
-						}
+						httpResponse.EnsureSuccessStatusCode(); // Let's throw
 					}
 				}
 			}
@@ -1001,7 +996,10 @@ namespace NBitcoin.RPC
 						{
 							response = RPCResponse.Load(await httpResponse.Content.ReadAsStreamAsync());
 							if (request.ThrowIfRPCError)
+							{
 								response.ThrowIfError();
+								httpResponse.EnsureSuccessStatusCode();
+							}
 						}
 						else if (await IsWorkQueueFull(httpResponse))
 						{
@@ -1726,7 +1724,7 @@ namespace NBitcoin.RPC
 			{
 				try
 				{
-					var feeRateDecimal = feeRate.FeePerK.ToDecimal(MoneyUnit.Satoshi);
+					var feeRateDecimal = feeRate.FeePerK.ToDecimal(MoneyUnit.BTC);
 					response = await SendCommandAsync(RPCOperations.testmempoolaccept, cancellationToken, new[] { transaction.ToHex() }, feeRateDecimal).ConfigureAwait(false);
 				}
 				catch (RPCException ex) when (ex.Message == "Expected type bool, got number")
