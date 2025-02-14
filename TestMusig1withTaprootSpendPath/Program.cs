@@ -8,6 +8,8 @@ using NBitcoin.Secp256k1.Musig;
 using NBitcoin.Crypto;
 using System.Security.Cryptography;
 using System.Reflection.Metadata;
+using Newtonsoft.Json.Linq;
+using System.Reflection;
 
 
 namespace NBitcoinTraining
@@ -22,7 +24,8 @@ namespace NBitcoinTraining
 			//musig_address_and_path_spend_with_huffman();
 			//musig_matching_dc();
 			//musig_matching_dc2();
-			CanSignUsingTapscriptAndKeySpend();
+			//CanSignUsingTapscriptAndKeySpend();
+			musig_matching_3_of_5();
 
 		}
 
@@ -34,11 +37,16 @@ namespace NBitcoinTraining
 			"54082c2ee51166cfa4fd8c3076ee30043808b3cca351e3288360af81d3ef9f8c",
 			"cba536615bbe1ae2fdf8100104829db61c8cf2a7f0bd9a225cbf09e79d83096c"
 			};
-
+			
 			var ecPrivateKeys = new ECPrivKey[ecPrivateKeysHex.Length];
+			ECXOnlyPubKey? xonly;
 			for (int i = 0; i < ecPrivateKeysHex.Length; i++)
 			{
 				byte[] privateKeyBytes = Encoders.Hex.DecodeData(ecPrivateKeysHex[i]);
+				var ec_pkey = NBitcoin.Secp256k1.ECPrivKey.Create(privateKeyBytes);
+				xonly = ec_pkey.CreatePubKey().ToXOnlyPubKey();
+				Console.WriteLine($"ec_pkey_xonly: {Encoders.Hex.EncodeData(xonly.ToBytes())}");
+				
 				ecPrivateKeys[i] = ctx.CreateECPrivKey(privateKeyBytes);
 			}
 
@@ -77,9 +85,12 @@ namespace NBitcoinTraining
 
 			var scriptWeights = scriptWeightsList.ToArray();
 
+
 			var keySpend = new Key(Encoders.Hex.DecodeData("c0655fae21a8b7fae19cfeac6135ded8090920f9640a148b0fd5ff9c15c6e948"));
 			var KeySpendinternalPubKey = keySpend.PubKey.TaprootInternalKey;
 			var treeInfo = TaprootSpendInfo.WithHuffmanTree(KeySpendinternalPubKey, scriptWeights);
+
+
 			taprootPubKey = treeInfo.OutputPubKey.OutputKey;
 			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
 			{
@@ -829,6 +840,454 @@ namespace NBitcoinTraining
 				//		break; // Break out of the loop since you found the desired item
 				//	}
 				//}
+
+
+				NBitcoin.TxOut[] spentOutputsIn = spentAllOutputsIn.ToArray();
+
+
+
+				var dest = rpc.GetNewAddress();
+				//spender.Outputs.Add(NBitcoin.Money.Coins(0.7m), dest);
+				//spender.Outputs.Add(NBitcoin.Money.Coins(0.2999000m), addr);
+				spender.Outputs.Add(NBitcoin.Money.Coins(0.99999830m), addr); // fee 170 satoshis = vSize
+
+
+				var sighash = NBitcoin.TaprootSigHash.All | NBitcoin.TaprootSigHash.AnyoneCanPay;
+
+
+
+				var allkeysarray = all_keys.ToArray();
+				var allTreeInfoArray = AllTreeInfo.ToArray();
+
+				////////////////////////
+				///
+				TaprootExecutionData extectionData;
+
+
+				Boolean useKeySpend = false;
+				if (useKeySpend)
+				{
+					// ADDRESS PATH
+
+					for (int i = 0; i < spender.Inputs.Count; i++)
+					{
+
+						extectionData = new TaprootExecutionData(0) { SigHash = sighash };
+						var hash = spender.GetSignatureHashTaproot(spentOutputsIn, extectionData);
+						var sig = keySpend.SignTaprootKeySpend(hash, allTreeInfoArray[i].MerkleRoot, sighash);
+						spender.Inputs[i].WitScript = new NBitcoin.WitScript(NBitcoin.Op.GetPushOp(sig.ToBytes()));
+					}
+				}
+				else
+				{
+
+					var min_num_signatures = 2;
+					var sigs = new TaprootSignature[min_num_signatures];
+					for (int i = 0; i < spender.Inputs.Count; i++)
+					{
+
+
+						extectionData = new TaprootExecutionData(0, Scripts[0].LeafHash) { SigHash = sighash };
+						var hash = spender.GetSignatureHashTaproot(spentOutputsIn, extectionData);
+						// use this signatures if XOnly pubKey
+						//var sig11 = privateKeys[0].SignTaprootScriptSpend(hash, sighash);
+						var sig11 = allkeysarray[0].SignTaprootScriptSpend(hash, sighash);
+						var strSig = Encoders.Hex.EncodeData(sig11.ToBytes()).ToString();
+						sigs[0] = TaprootSignature.Parse(strSig);
+						//var sig22 = privateKeys[2].SignTaprootScriptSpend(hash, sighash);
+						var sig22 = allkeysarray[2].SignTaprootScriptSpend(hash, sighash);
+						strSig = Encoders.Hex.EncodeData(sig22.ToBytes()).ToString();
+						sigs[1] = TaprootSignature.Parse(strSig);
+						// signatures go in reverse order of the pubKeys in script
+						ops.Clear();
+
+						for (var r = min_num_signatures - 1; r >= 0; r--)
+						{
+							ops.Add(Op.GetPushOp(sigs[r].ToBytes()));
+							Console.WriteLine($"Signature[{r}] {sigs[r].ToString()}");
+						}
+
+
+						ops.Add(Op.GetPushOp(Scripts[0].Script.ToBytes()));
+						ops.Add(Op.GetPushOp(allTreeInfoArray[i].GetControlBlock(Scripts[0]).ToBytes()));
+						Console.WriteLine($"Script[{0}]: {Scripts[0].Script}");
+						spender.Inputs[i].WitScript = new WitScript(ops.ToArray());
+
+
+						Console.WriteLine("witness: " + spender.Inputs[i].WitScript.ToString());
+
+
+					}
+				}
+
+
+
+				// COMMON
+
+
+
+				Console.WriteLine(spender.ToString());
+				var validator = spender.CreateValidator(spentOutputsIn);
+				Console.WriteLine("virtual size: " + spender.GetVirtualSize());
+				Console.WriteLine("to hex: " + spender.ToHex().ToString());
+				var result = validator.ValidateInput(0);
+				var success = result.Error is null;
+				Console.WriteLine("does validate witness? " + success);
+
+				InputValidationResult[] resullts = validator.ValidateInputs();
+				for (int i = 0; i < resullts.Length; i++)
+				{
+					var success3 = resullts[i].Error is null;
+					Console.WriteLine($"does validate witness? [{i}] " + success3);
+				}
+
+				//rpc.SendRawTransaction(spender);
+
+
+			}
+		}
+
+
+		static List<List<PubKey>> GenerateCombinations(List<PubKey> items, int combinationSize)
+		{
+			if (items == null || combinationSize <= 0 || combinationSize > items.Count)
+				throw new ArgumentException("Invalid input: Ensure the list is not null and the combination size is valid.");
+
+			var result = new List<List<PubKey>>();
+			GenerateCombinationsRecursive(items, combinationSize, 0, new List<PubKey>(), result);
+			return result;
+		}
+
+		static void GenerateCombinationsRecursive(List<PubKey> items, int combinationSize, int start, List<PubKey> current, List<List<PubKey>> result)
+		{
+			if (current.Count == combinationSize)
+			{
+				result.Add(new List<PubKey>(current));
+				return;
+			}
+
+			for (int i = start; i < items.Count; i++)
+			{
+				current.Add(items[i]);
+				GenerateCombinationsRecursive(items, combinationSize, i + 1, current, result);
+				current.RemoveAt(current.Count - 1);
+			}
+		}
+
+		static (List<(uint, TapScript)>, TaprootAddress) GenerateScriptPubKey(int sigCount, bool sort, Network network, PubKey owner, params PubKey[] keys)
+		{
+			if (keys == null)
+				throw new ArgumentNullException(nameof(keys));
+			if (owner == null)
+				throw new ArgumentNullException(nameof(keys));
+			if (sort)
+				Array.Sort(keys);
+			if (sigCount <= 1 || sigCount > 16)
+				throw new ArgumentException("Invalid input: The number of signatures must be between 2 and 16.");
+
+			List<List<PubKey>> combinations = new List<List<PubKey>>();
+
+			try
+			{
+				combinations = GenerateCombinations(keys.ToList(), sigCount);
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"Error creating PubKey[] combination: {ex.Message}");
+			}
+
+			var peers = sigCount; // 3 per multisignature
+			var howManyScripts = combinations.Count; // 5 combinations of 3 multisignatures
+			var Scripts = new TapScript[howManyScripts];
+
+			List<Op> ops = new List<Op>();
+			var scriptWeightsList = new List<(UInt32, TapScript)>();
+			var probability = (uint)(100 / howManyScripts);
+
+			for (int i = 0; i < combinations.Count; i++)
+			{
+				ops.Clear();
+				//Console.WriteLine($"Combination {i + 1}:");
+				int p = 1;
+				foreach (var pubKey in combinations[i])
+				{
+					//Console.WriteLine($"  {pubKey.ToString()}");
+					var xonlypubk = ECPubKey.Create(Encoders.Hex.DecodeData(pubKey.ToString())).ToXOnlyPubKey();
+					ops.Add(Op.GetPushOp(xonlypubk.ToBytes()));
+
+					if ( p == combinations[i].Count )
+					{
+						ops.Add(OpcodeType.OP_CHECKSIGADD);
+					}
+					else
+					{
+						ops.Add(OpcodeType.OP_CHECKSIG);
+					}
+					p += 1;
+
+				}
+
+				switch (peers)
+				{
+					case 2:
+						ops.Add(OpcodeType.OP_2);
+						break;
+					case 3:
+						ops.Add(OpcodeType.OP_3);
+						break;
+					case 4:
+						ops.Add(OpcodeType.OP_4);
+						break;
+					case 5:
+						ops.Add(OpcodeType.OP_5);
+						break;
+					case 6:
+						ops.Add(OpcodeType.OP_6);
+						break;
+					case 7:
+						ops.Add(OpcodeType.OP_7);
+						break;
+					case 8:
+						ops.Add(OpcodeType.OP_8);
+						break;
+					case 9:
+						ops.Add(OpcodeType.OP_9);
+						break;
+					case 10:
+						ops.Add(OpcodeType.OP_10);
+						break;
+					case 11:
+						ops.Add(OpcodeType.OP_11);
+						break;
+					case 12:
+						ops.Add(OpcodeType.OP_12);
+						break;
+					case 13:
+						ops.Add(OpcodeType.OP_13);
+						break;
+					case 14:
+						ops.Add(OpcodeType.OP_14);
+						break;
+					case 15:
+						ops.Add(OpcodeType.OP_15);
+						break;
+					case 16:
+						ops.Add(OpcodeType.OP_16);
+						break;
+				}
+				ops.Add(OpcodeType.OP_NUMEQUAL);
+
+				Scripts[i] = new Script(ops).ToTapScript(TapLeafVersion.C0);
+				//Console.WriteLine($"Script[{i}]: {Scripts[i].ToString()}");
+				scriptWeightsList.Add((probability, Scripts[i]));
+
+			}
+
+			var scriptWeights = scriptWeightsList.ToArray();
+			var ec_PubKey = ECPubKey.Create(Encoders.Hex.DecodeData(owner.ToString()));
+			var xOnlyFromPubkey = ec_PubKey.ToXOnlyPubKey();
+			var tapIntFromEC = new TaprootInternalPubKey(xOnlyFromPubkey.ToBytes());
+			var treeInfo = TaprootSpendInfo.WithHuffmanTree(tapIntFromEC, scriptWeights);
+			var taprootPubKey = treeInfo.OutputPubKey.OutputKey;
+			var addr = taprootPubKey.GetAddress(network);
+
+			return(scriptWeightsList, addr);
+
+		}
+		static TaprootAddress GenerateScriptAddress(int sigCount, Network network, PubKey owner, params PubKey[] keys)
+		{
+			if (keys == null)
+				throw new ArgumentNullException(nameof(keys));
+			if (owner == null)
+				throw new ArgumentNullException(nameof(keys));
+			if (sigCount <= 1 || sigCount > 16)
+				throw new ArgumentException("Invalid input: The number of signatures must be between 2 and 16.");
+
+			var (scriptWeights, addr) = GenerateScriptPubKey(sigCount, true, network, owner, keys);
+
+			return (addr);
+		}
+
+			static void musig_matching_3_of_5()
+		{
+
+
+			var strmasterPubKeys = new[] {
+					"tpubDEZUvCj2FMcaNc2VEmHhn9CEC7wjtoRz7uYX4jnn6hFbyVedNH4kwyY3rBdrtQmbFR7Qp4Q2VhCGsCs8PBqPReg8qH9ZTnLd4PDXL7kuoXK",
+					"tpubDEbZ8cJoHhNMXYXCoCCqag11kckQxoY81sbC88Samp5ov8eRGTSZgrCfHysRo8zVf1PgyyHf3UFLAmf7kXm2FSswcs2jcXuZa8PRzjq1k4X",
+					"tpubDFTd5FohLoP3ZAWyixHgvgbdCGxaPdsXRUjUeQpiE2C7o4bxBvqXz5pfq2MstMrxHVc7AeauFH3DatEjtdL7VnDXBcnm3YcrHQuQe4j1BUF",
+					"tpubDE5Bm64sjJXBXf4fTQT3JRnP3MPyaLN2X1vA5gmy4QdNoNSTxswqecEzUzBo2wKiHe49XsQZKdHFABkoWW4ZgQtgGPw7uGvhXK5WVbh3h9y",
+					"tpubDEQgusD2c6KT17prVB1L9DxtGp26XfJuz3RYXvChN9TmZUm6zbdNaFbUXGuFwCWv3inFNnh45YVqM9WoVbGRU2QWdeaqF4TGt4tyxZwgdZ4"
+					};
+
+			var masterPubKeys = new ExtPubKey[strmasterPubKeys.Length];
+			for (int i = 0; i < strmasterPubKeys.Length; i++)
+			{
+				var tempMasterKey = ExtPubKey.Parse(strmasterPubKeys[i], Network.RegTest);
+				var keyPath = new NBitcoin.KeyPath("/3");
+				var tempMasterKey2 = tempMasterKey.Derive(keyPath);
+				masterPubKeys[i] = tempMasterKey2;
+				Console.WriteLine($"masterPubKey internalTaproot: [{i}] {masterPubKeys[i].PubKey.TaprootInternalKey.ToString()}");
+				Console.WriteLine($"masterPubKey taproot Full: [{i}]  {masterPubKeys[i].PubKey.GetTaprootFullPubKey().ToString()}");
+				Console.WriteLine($"masterPubKey EC pubkey: [{i}]  {masterPubKeys[i].PubKey.ToString()}");
+			}
+
+			var ecPrivateKeysHex = new[] {
+			"61c87e48b33e823283691e572f3ae95aa1bf71fff7c19a1173cc479ec0c2f871",
+			"371c8d4f72e646e9208d04a14d135f2f2ca02c8cfd16cb69fa7f3ea29093dd94",
+			"94bbe89a4878611960cbab784ad3b654e082d38079246111faf8a8eef56b96ae",
+			"f9dca77a986f5f64beaaffcb2e06c46da86737b1877d0ff07b7c251c16f26d92",
+			"6f2b793cc7ecc1f1cac8d7d9d9e13426b5fbf74496ca73a3bacaf025ba34713b"
+			};
+
+			var ecPubKeys = new ECXOnlyPubKey[ecPrivateKeysHex.Length];
+			for (int i = 0; i < ecPrivateKeysHex.Length; i++)
+			{
+				byte[] privateKeyBytes = Encoders.Hex.DecodeData(ecPrivateKeysHex[i]);
+				ecPubKeys[i] = NBitcoin.Secp256k1.ECPubKey.Create(NBitcoin.DataEncoders.Encoders.Hex.DecodeData(masterPubKeys[i].PubKey.ToString())).ToXOnlyPubKey();
+				Console.WriteLine($"ecPubKeys[{i}]  {Encoders.Hex.EncodeData(ecPubKeys[i].ToBytes()).ToString()}");
+				// ecPubkKyes are the same as masterPubKey internalTaproot from above
+
+			}
+
+			var all_keys = new List<NBitcoin.Key>();
+
+			var privateKeys = new Key[ecPrivateKeysHex.Length];
+			var pubKeys = new PubKey[ecPrivateKeysHex.Length];
+			for (int i = 0; i < ecPrivateKeysHex.Length; i++)
+			{
+				byte[] privateKeyBytes = Encoders.Hex.DecodeData(ecPrivateKeysHex[i]);
+				privateKeys[i] = new Key(privateKeyBytes);
+				all_keys.Add(privateKeys[i]);
+				pubKeys[i] = privateKeys[i].PubKey;
+				Console.WriteLine($"PubKeys[{i}]  {Encoders.Hex.EncodeData(privateKeys[i].PubKey.ToBytes()).ToString()}");
+				Console.WriteLine($"PubKeys Internal Taproot[{i}]  {privateKeys[i].PubKey.TaprootInternalKey.ToString()}");
+			}
+
+			var keySpend = new Key(Encoders.Hex.DecodeData("69d0f570f729fede96bc456d9a05c611a0e97a49045d5ac5250349e5d9220684"));
+
+			var KeySpendinternalPubKey = keySpend.PubKey.TaprootInternalKey;
+			var ownerPubKey = keySpend.PubKey;
+
+
+			var generatedAddress = GenerateScriptAddress(3, Network.RegTest, ownerPubKey, pubKeys);
+			Console.WriteLine($"GenerateScriptAddress  {generatedAddress.ToString()}");
+
+			var (scriptWeightsGenerated, addrGenerated) = GenerateScriptPubKey(3, true, Network.RegTest, ownerPubKey, pubKeys);
+			Console.WriteLine($"Are both same Taproot Address  {generatedAddress.Equals(addrGenerated)}");
+
+			var scriptWeights2 = scriptWeightsGenerated.ToArray();
+
+
+
+
+
+
+
+			var peers = ecPrivateKeysHex.Length;
+			TaprootPubKey taprootPubKey = null;
+
+
+
+			var howManyScripts = 3;
+			var probability = (uint)(100 / howManyScripts);
+			var scriptWeightsList = new List<(UInt32, TapScript)>();
+			var Scripts = new TapScript[howManyScripts];
+			List<NBitcoin.Op> ops = new List<NBitcoin.Op>();
+
+
+			// ADD the 3 tap scripts
+			// each is a 2-of-2 MuSig1 tapscript
+
+			ops.Clear();
+			ops.Add(Op.GetPushOp(ecPubKeys[0].ToBytes()));
+			ops.Add(OpcodeType.OP_CHECKSIG);
+			ops.Add(Op.GetPushOp(ecPubKeys[2].ToBytes()));
+			ops.Add(OpcodeType.OP_CHECKSIGADD);
+			ops.Add(OpcodeType.OP_2);
+			ops.Add(OpcodeType.OP_NUMEQUAL);
+			Scripts[0] = new NBitcoin.Script(ops).ToTapScript(NBitcoin.TapLeafVersion.C0);
+			Console.WriteLine("Script[0]: " + Scripts[0].ToString());
+			scriptWeightsList.Add((probability, Scripts[0]));
+
+			ops.Clear();
+			ops.Add(Op.GetPushOp(ecPubKeys[0].ToBytes()));
+			ops.Add(OpcodeType.OP_CHECKSIG);
+			ops.Add(Op.GetPushOp(ecPubKeys[1].ToBytes()));
+			ops.Add(OpcodeType.OP_CHECKSIGADD);
+			ops.Add(OpcodeType.OP_2);
+			ops.Add(OpcodeType.OP_NUMEQUAL);
+			Scripts[1] = new Script(ops).ToTapScript(TapLeafVersion.C0);
+			Console.WriteLine("Script[1]: " + Scripts[1].ToString());
+			scriptWeightsList.Add((probability, Scripts[1]));
+
+			ops.Clear();
+			ops.Add(Op.GetPushOp(ecPubKeys[1].ToBytes()));
+			ops.Add(OpcodeType.OP_CHECKSIG);
+			ops.Add(Op.GetPushOp(ecPubKeys[2].ToBytes()));
+			ops.Add(OpcodeType.OP_CHECKSIGADD);
+			ops.Add(OpcodeType.OP_2);
+			ops.Add(OpcodeType.OP_NUMEQUAL);
+			Scripts[2] = new Script(ops).ToTapScript(TapLeafVersion.C0);
+			Console.WriteLine("Script[2]: " + Scripts[2].ToString());
+			scriptWeightsList.Add((probability, Scripts[2]));
+
+
+			var scriptWeights = scriptWeightsList.ToArray();
+
+
+
+
+			var AllTreeInfo = new System.Collections.Generic.List<NBitcoin.TaprootSpendInfo>();
+
+
+			NBitcoin.TaprootSpendInfo treeInfo;
+			treeInfo = TaprootSpendInfo.WithHuffmanTree(KeySpendinternalPubKey, scriptWeights);
+
+			// add twice because I'm processing to TxIns
+			AllTreeInfo.Add(treeInfo);
+			//AllTreeInfo.Add(treeInfo);
+
+
+			taprootPubKey = treeInfo.OutputPubKey.OutputKey;
+
+
+
+			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
+			{
+
+
+
+				var rpc = nodeBuilder.CreateNode().CreateRPCClient();
+				nodeBuilder.StartAll();
+				rpc.Generate(102);
+
+				var addr = taprootPubKey.GetAddress(Network.RegTest);
+				Console.WriteLine("Address to send: " + addr.ToString());
+
+				rpc.Generate(1);
+
+
+				var txid = rpc.SendToAddress(addr, Money.Coins(1.0m));
+
+
+				var tx = rpc.GetRawTransaction(txid);
+				Console.WriteLine("input transaction: " + tx.ToString());
+
+
+				var spender = Transaction.Create(Network.RegTest);
+
+				//NBitcoin.IndexedTxOut spentOutput = null;
+				var spentAllOutputsIn = new List<NBitcoin.TxOut>();
+				foreach (var output in tx.Outputs.AsIndexedOutputs())
+				{
+					if (output.TxOut.ScriptPubKey == addr.ScriptPubKey)
+					{
+						spender.Inputs.Add(new OutPoint(tx, output.N));
+						spentAllOutputsIn.Add(output.TxOut);
+						break; // Break out of the loop since you found the desired item
+					}
+				}
 
 
 				NBitcoin.TxOut[] spentOutputsIn = spentAllOutputsIn.ToArray();

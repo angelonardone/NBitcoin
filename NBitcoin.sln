@@ -48,9 +48,13 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingMuSigVerification", 
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingMuSigCreateSignatures", "TestingMuSigCreateSignatures\TestingMuSigCreateSignatures.csproj", "{FEFC8AA9-558A-4163-BF3D-7F6F6785F725}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestMusig2-2of2", "TestMusig2-2of2\TestMusig2-2of2.csproj", "{BE03CDF0-55CB-4C58-9FCF-18DCCAE97360}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestMusig2-2of2", "TestMusig2-2of2\TestMusig2-2of2.csproj", "{BE03CDF0-55CB-4C58-9FCF-18DCCAE97360}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestMusig1withTaprootSpendPath", "TestMusig1withTaprootSpendPath\TestMusig1withTaprootSpendPath.csproj", "{96318D88-56C4-4521-820D-1BC0E284C197}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestMusig1withTaprootSpendPath", "TestMusig1withTaprootSpendPath\TestMusig1withTaprootSpendPath.csproj", "{96318D88-56C4-4521-820D-1BC0E284C197}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "TestingCombinationOfStrings", "TestingCombinationOfStrings\TestingCombinationOfStrings.csproj", "{7447ABF4-03BA-4FD9-B3C7-6FE82F6FAF3D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DelegationMultiSig", "DelegationMultiSig\DelegationMultiSig.csproj", "{5EE1EF7D-9A0E-4796-9D21-19C9A2605C01}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -158,6 +162,14 @@ Global
 		{96318D88-56C4-4521-820D-1BC0E284C197}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{96318D88-56C4-4521-820D-1BC0E284C197}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{96318D88-56C4-4521-820D-1BC0E284C197}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7447ABF4-03BA-4FD9-B3C7-6FE82F6FAF3D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7447ABF4-03BA-4FD9-B3C7-6FE82F6FAF3D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7447ABF4-03BA-4FD9-B3C7-6FE82F6FAF3D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7447ABF4-03BA-4FD9-B3C7-6FE82F6FAF3D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5EE1EF7D-9A0E-4796-9D21-19C9A2605C01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5EE1EF7D-9A0E-4796-9D21-19C9A2605C01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5EE1EF7D-9A0E-4796-9D21-19C9A2605C01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5EE1EF7D-9A0E-4796-9D21-19C9A2605C01}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
