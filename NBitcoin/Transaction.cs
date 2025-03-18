@@ -339,6 +339,15 @@ namespace NBitcoin
 			txin.ScriptSig = new Script(Op.GetPushOp(height)) + OpcodeType.OP_0;
 			return txin;
 		}
+
+		/// <summary>
+		/// Remove <see cref="ScriptSig"/> and <see cref="WitScript"/> from this input.
+		/// </summary>
+		public void RemoveSignatures()
+		{
+			ScriptSig = Script.Empty;
+			WitScript = WitScript.Empty;
+		}
 	}
 
 	public class TxOutCompressor : IBitcoinSerializable
@@ -1444,6 +1453,14 @@ namespace NBitcoin
 				throw new ArgumentNullException(nameof(network));
 			return Load(Encoders.Hex.DecodeData(hex), network);
 		}
+		/// <summary>
+		/// Remove <see cref="TxIn.ScriptSig"/> and <see cref="TxIn.WitScript"/> from all inputs.
+		/// </summary>
+		public void RemoveSignatures()
+		{
+			foreach (var input in Inputs)
+				input.RemoveSignatures();
+		}
 
 		public static bool TryParse(string hex, Network network, out Transaction transaction)
 		{
@@ -1789,11 +1806,12 @@ namespace NBitcoin
 			return new PrecomputedTransactionData(this);
 		}
 
-		public virtual PSBT CreatePSBT(Network network)
+		public PSBT CreatePSBT(Network network) => CreatePSBT(network, PSBTVersion.PSBTv0);
+		public virtual PSBT CreatePSBT(Network network, PSBTVersion version)
 		{
 			if (network == null)
 				throw new ArgumentNullException(nameof(network));
-			var psbt = PSBT.FromTransaction(this, network);
+			var psbt = PSBT.FromTransaction(this, network, version);
 			return psbt;
 		}
 

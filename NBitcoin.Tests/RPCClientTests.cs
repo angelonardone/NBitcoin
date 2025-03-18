@@ -21,6 +21,7 @@ using NBitcoin.Tests.Generators;
 using static NBitcoin.Tests.Comparer;
 using System.Net.Http;
 using NBitcoin.Scripting;
+using NBitcoin.Protocol;
 
 namespace NBitcoin.Tests
 {
@@ -1762,8 +1763,9 @@ namespace NBitcoin.Tests
 			}
 		}
 
-		[Fact]
-		public async Task UpdatePSBTInRPCShouldIncludePreviousTX()
+		[Theory]
+		[InlineData(PSBTVersion.PSBTv0)]
+		public async Task UpdatePSBTInRPCShouldIncludePreviousTX(PSBTVersion version)
 		{
 			using (var builder = NodeBuilderEx.Create())
 			{
@@ -1778,7 +1780,7 @@ namespace NBitcoin.Tests
 				txbuilder.SetChange(await client.GetNewAddressAsync());
 				txbuilder.SendFees(Money.Satoshis(1000));
 				txbuilder.Send(new Key().PubKey.GetScriptPubKey(ScriptPubKeyType.Legacy), Money.Coins(1.0m));
-				var psbt = txbuilder.BuildPSBT(false);
+				var psbt = txbuilder.BuildPSBT(false, version);
 
 				var resp = await client.WalletProcessPSBTAsync(psbt, false);
 				Assert.NotNull(resp.PSBT.Inputs[0].NonWitnessUtxo);
@@ -1800,7 +1802,7 @@ namespace NBitcoin.Tests
 				var funds = PSBTTests.CreateDummyFunds(Network.TestNet, keys, redeem);
 
 				// case1: PSBT from already fully signed tx
-				var tx = PSBTTests.CreateTxToSpendFunds(funds, keys, redeem, true, true);
+				var tx = PSBTTests.CreateTxToSpendFunds(funds, keys);
 				var psbt = PSBT.FromTransaction(tx, builder.Network);
 				psbt.AddCoins(funds);
 				CheckPSBTIsAcceptableByRealRPC(psbt.ToBase64(), client);
@@ -1811,13 +1813,13 @@ namespace NBitcoin.Tests
 				CheckPSBTIsAcceptableByRealRPC(psbt.ToBase64(), client);
 
 				// case2: PSBT from tx with script (but without signatures)
-				tx = PSBTTests.CreateTxToSpendFunds(funds, keys, redeem, true, false);
+				tx = PSBTTests.CreateTxToSpendFunds(funds, keys);
 				psbt = PSBT.FromTransaction(tx, builder.Network);
 				psbt.AddCoins(funds);
 				CheckPSBTIsAcceptableByRealRPC(psbt.ToBase64(), client);
 
 				// case3: PSBT from tx without script nor signatures.
-				tx = PSBTTests.CreateTxToSpendFunds(funds, keys, redeem, false, false);
+				tx = PSBTTests.CreateTxToSpendFunds(funds, keys);
 				psbt = PSBT.FromTransaction(tx, builder.Network);
 				// This time, it will not throw an error at the first place.
 				// Since sanity check for witness input will not complain about witness-script-without-witnessUtxo
@@ -1891,7 +1893,7 @@ namespace NBitcoin.Tests
 				var keys = new Key[] { new Key(), new Key(), new Key() }.Select(k => k.GetWif(Network.RegTest)).ToArray();
 				var redeem = PayToMultiSigTemplate.Instance.GenerateScriptPubKey(3, keys.Select(ki => ki.PubKey).ToArray());
 				var funds = PSBTTests.CreateDummyFunds(Network.TestNet, keys, redeem);
-				var tx = PSBTTests.CreateTxToSpendFunds(funds, keys, redeem, true, true);
+				var tx = PSBTTests.CreateTxToSpendFunds(funds, keys);
 				var psbt = PSBT.FromTransaction(tx, builder.Network)
 					.AddTransactions(funds)
 					.AddScripts(redeem);
@@ -2018,9 +2020,12 @@ namespace NBitcoin.Tests
 					c.ImportMulti(importMultiObject, false);
 				}
 
+				var funderClient = nodeFunder.CreateRPCClient();
+
+				var aa = await funderClient.GetBlockchainInfoAsync();
 				// pay from funder
 				nodeFunder.Generate(103);
-				var funderClient = nodeFunder.CreateRPCClient();
+				aa = await funderClient.GetBlockchainInfoAsync();
 				funderClient.SendToAddress(aMultiP2SH, Money.Coins(40));
 				// funderClient.SendToAddress(aMultiP2WSH, Money.Coins(40));
 				// funderClient.SendToAddress(aMultiP2SH_P2WSH, Money.Coins(40));

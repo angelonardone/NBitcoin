@@ -10,9 +10,11 @@ namespace NBitcoin.Tests
 	public class sample_tests
 	{
 #if HAS_SPAN
-		[Fact]
+		[Theory]
+		[InlineData(PSBTVersion.PSBTv0)]
+		[InlineData(PSBTVersion.PSBTv2)]
 		[Trait("UnitTest", "UnitTest")]
-		public async Task CanBuildTaprootSingleSigTransactions()
+		public async Task CanBuildTaprootSingleSigTransactions(PSBTVersion version)
 		{
 			using (var nodeBuilder = NodeBuilderEx.Create())
 			{
@@ -60,7 +62,7 @@ namespace NBitcoin.Tests
 					.SubtractFees()
 					.SetChange(change)
 					.SendEstimatedFees(rate)
-					.BuildPSBT(false);
+					.BuildPSBT(false, version);
 
 				var tk = key.PubKey.GetTaprootFullPubKey();
 				psbt.Inputs[0].HDTaprootKeyPaths.Add(tk.OutputKey, new TaprootKeyPath(accountRootKeyPath.Derive(KeyPath.Parse("0/0"))));
@@ -81,7 +83,7 @@ namespace NBitcoin.Tests
 					.SubtractFees()
 					.SetChange(change)
 					.SendEstimatedFees(rate)
-					.BuildPSBT(true);
+					.BuildPSBT(true, version);
 				psbt.Finalize();
 				rpc.SendRawTransaction(psbt.ExtractTransaction());
 
@@ -97,7 +99,7 @@ namespace NBitcoin.Tests
 					.SubtractFees()
 					.SetChange(change)
 					.SendEstimatedFees(rate)
-					.BuildPSBT(true);
+					.BuildPSBT(true, version);
 				Assert.NotNull(psbt.Inputs[0].TaprootMerkleRoot);
 				Assert.NotNull(psbt.Inputs[0].TaprootInternalKey);
 				Assert.NotNull(psbt.Inputs[0].TaprootKeySignature);
@@ -113,7 +115,7 @@ namespace NBitcoin.Tests
 					.SubtractFees()
 					.SetChange(change)
 					.SendEstimatedFees(rate)
-					.BuildPSBT(false);
+					.BuildPSBT(false, version);
 
 				var taprootKeyPair = key.CreateTaprootKeyPair(merkleRoot);
 				psbt.Inputs[0].Sign(taprootKeyPair);
@@ -248,9 +250,11 @@ namespace NBitcoin.Tests
 			}
 		}
 
-		[Fact]
+		[Theory]
+		[InlineData(PSBTVersion.PSBTv0)]
+		[InlineData(PSBTVersion.PSBTv2)]
 		[Trait("UnitTest", "UnitTest")]
-		public void CanBuildSegwitP2SHMultisigTransactionsWithPSBT()
+		public void CanBuildSegwitP2SHMultisigTransactionsWithPSBT(PSBTVersion version)
 		{
 			using (var nodeBuilder = NodeBuilderEx.Create())
 			{
@@ -285,7 +289,7 @@ namespace NBitcoin.Tests
 					.SubtractFees()
 					.SetChange(new Key())
 					.SendEstimatedFees(rate)
-					.BuildPSBT(true);
+					.BuildPSBT(true, version);
 				Assert.True(partiallySignedTx.Inputs.All(i => i.PartialSigs.Count == 1));
 
 				partiallySignedTx = PSBT.Load(partiallySignedTx.ToBytes(), Network.Main);
@@ -306,9 +310,11 @@ namespace NBitcoin.Tests
 		}
 
 
-		[Fact]
+		[Theory]
+		[InlineData(PSBTVersion.PSBTv0)]
+		[InlineData(PSBTVersion.PSBTv2)]
 		[Trait("UnitTest", "UnitTest")]
-		public void CanSignPSBTWithRootAndAccountKey()
+		public void CanSignPSBTWithRootAndAccountKey(PSBTVersion version)
 		{
 			using (var nodeBuilder = NodeBuilderEx.Create())
 			{
@@ -358,7 +364,7 @@ namespace NBitcoin.Tests
 					.Send(destination, amount)
 					.SetChange(changeAddress.Address)
 					.SendFees(fee)
-					.BuildPSBT(false);
+					.BuildPSBT(false, version);
 				partiallySignedTx.AddKeyPath(masterKey, addresses.Concat(new[] { changeAddress }).Select(a => a.FullAddressPath.KeyPath).ToArray());
 				var expectedBalance = -amount - fee;
 				var actualBalance = partiallySignedTx.GetBalance(ScriptPubKeyType.Segwit, accountKey, accountKeyPath);
