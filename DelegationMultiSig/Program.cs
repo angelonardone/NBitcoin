@@ -12,6 +12,8 @@ using Newtonsoft.Json.Linq;
 using System.Reflection;
 using Newtonsoft.Json;
 using static NBitcoin.WalletPolicies.Miniscript;
+using NBitcoin.WalletPolicies;
+using static NBitcoin.WalletPolicies.MiniscriptNode;
 
 
 namespace NBitcoinTraining
@@ -89,6 +91,18 @@ namespace NBitcoinTraining
 
 			for (int i = 0; i < combinations.Count; i++)
 			{
+
+
+				//ops.Clear();
+				////Console.WriteLine($"Combination {i + 1}:");
+				//var pubkeys = combinations[i].Select(k => MiniscriptNode.Value.Create(k.GetTaprootFullPubKey())).ToArray();
+				//var taproot = FragmentUnboundedParameters.multi_a([new Value.CountValue(peers), .. pubkeys]);
+				//Scripts[i] = taproot.GetScript().ToTapScript(TapLeafVersion.C0);
+				////Console.WriteLine($"Script[{i}]: {Scripts[i].ToString()}");
+				////scriptWeightsList.Add((probability, Scripts[i]));
+				//scriptWeightsList.Add((probability, Scripts[i]));
+
+
 				ops.Clear();
 				//Console.WriteLine($"Combination {i + 1}:");
 				int p = 1;
@@ -112,58 +126,28 @@ namespace NBitcoinTraining
 
 				switch (peers)
 				{
-					case 2:
-						ops.Add(OpcodeType.OP_2);
-						break;
-					case 3:
-						ops.Add(OpcodeType.OP_3);
-						break;
-					case 4:
-						ops.Add(OpcodeType.OP_4);
-						break;
-					case 5:
-						ops.Add(OpcodeType.OP_5);
-						break;
-					case 6:
-						ops.Add(OpcodeType.OP_6);
-						break;
-					case 7:
-						ops.Add(OpcodeType.OP_7);
-						break;
-					case 8:
-						ops.Add(OpcodeType.OP_8);
-						break;
-					case 9:
-						ops.Add(OpcodeType.OP_9);
-						break;
-					case 10:
-						ops.Add(OpcodeType.OP_10);
-						break;
-					case 11:
-						ops.Add(OpcodeType.OP_11);
-						break;
-					case 12:
-						ops.Add(OpcodeType.OP_12);
-						break;
-					case 13:
-						ops.Add(OpcodeType.OP_13);
-						break;
-					case 14:
-						ops.Add(OpcodeType.OP_14);
-						break;
-					case 15:
-						ops.Add(OpcodeType.OP_15);
-						break;
-					case 16:
-						ops.Add(OpcodeType.OP_16);
-						break;
+					case 2: ops.Add(OpcodeType.OP_2); break;
+					case 3: ops.Add(OpcodeType.OP_3); break;
+					case 4: ops.Add(OpcodeType.OP_4); break;
+					case 5: ops.Add(OpcodeType.OP_5); break;
+					case 6: ops.Add(OpcodeType.OP_6); break;
+					case 7: ops.Add(OpcodeType.OP_7); break;
+					case 8: ops.Add(OpcodeType.OP_8); break;
+					case 9: ops.Add(OpcodeType.OP_9); break;
+					case 10: ops.Add(OpcodeType.OP_10); break;
+					case 11: ops.Add(OpcodeType.OP_11); break;
+					case 12: ops.Add(OpcodeType.OP_12); break;
+					case 13: ops.Add(OpcodeType.OP_13); break;
+					case 14: ops.Add(OpcodeType.OP_14); break;
+					case 15: ops.Add(OpcodeType.OP_15); break;
+					case 16: ops.Add(OpcodeType.OP_16); break;
 				}
 				ops.Add(OpcodeType.OP_NUMEQUAL);
 
 				Scripts[i] = new Script(ops).ToTapScript(TapLeafVersion.C0);
 				//Console.WriteLine($"Script[{i}]: {Scripts[i].ToString()}");
-				//scriptWeightsList.Add((probability, Scripts[i]));
-				scriptWeightsList.Add(((uint)i + 1, Scripts[i]));
+				scriptWeightsList.Add((probability, Scripts[i]));
+				//scriptWeightsList.Add(((uint)i + 1, Scripts[i]));
 
 			}
 
@@ -482,8 +466,9 @@ namespace NBitcoinTraining
 						extectionData = new TaprootExecutionData(i, ScriptToSign.LeafHash) { SigHash = sighash };
 						var hash = spender.GetSignatureHashTaproot(spentOutputsIn, extectionData);
 
-						var test1 = SignFirst(scriptWeightsGenerated, allkeysarray[0], hash, sighash);
-						var test2 = SignScript(test1, allkeysarray[1], hash, sighash);
+						var test1 = SignFirst(scriptWeightsGenerated, allkeysarray[1], hash, sighash);
+						var test2 = SignScript(test1, allkeysarray[0], hash, sighash);
+
 
 						// manually create signatures
 						sigs[0] = allkeysarray[0].SignTaprootScriptSpend(hash, sighash); // signature OK
@@ -498,7 +483,8 @@ namespace NBitcoinTraining
 						for (var r = min_num_signatures - 1; r >= 0; r--)
 						{
 							ops.Add(Op.GetPushOp(sigs[r].ToBytes()));
-							Console.WriteLine($"Signature[{r}] {sigs[r].ToString()}");
+							//ops.Add(Op.GetPushOp(test2[0].signatures[r].Item2.ToBytes()));
+					Console.WriteLine($"Signature[{r}] {sigs[r].ToString()}");
 							Console.WriteLine($"Signature[{r}] Size: {sigs[r].ToBytes().Length}");
 						}
 
