@@ -7,6 +7,10 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'" />
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'" />
+
   <ItemGroup>
     <ProjectReference Include="..\NBitcoin.Secp256k1\NBitcoin.Secp256k1.csproj" />
     <ProjectReference Include="..\NBitcoin.Tests\NBitcoin.Tests.csproj" />
