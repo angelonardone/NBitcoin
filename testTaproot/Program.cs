@@ -65,6 +65,22 @@ namespace angeloNBitcoin
 			Console.WriteLine(TaprootAddress.Create("bcrt1pv7t4684zpxsye63m6kjzarg3ct85lwdu0mn02lfwlfdppzv0muyquvuty9", Network.RegTest));
 
 
+
+			var main_key = new Key(NBitcoin.DataEncoders.Encoders.Hex.DecodeData("611bf4560ecd9d966880bc1221c39aa089b9def014466f7e16ec4e0e8a99492b"));
+
+
+			Console.WriteLine("taproot pubkey: " + main_key.PubKey.GetTaprootFullPubKey().ToString());
+			var pub_tap_key = main_key.PubKey.GetTaprootFullPubKey();
+
+			Console.WriteLine("taproot internal key" + pub_tap_key.InternalKey.ToString());
+
+			var taprootaddress = TaprootAddress.Create("bcrt1pmmezxxh9n9vrp5wtkqxfy93wnp733aefkt9r2cxlqfhet603fmnscr8kg8", Network.RegTest);
+			var bitcoinaddress  = BitcoinAddress.Create("bcrt1pmmezxxh9n9vrp5wtkqxfy93wnp733aefkt9r2cxlqfhet603fmnscr8kg8", Network.RegTest);
+			Console.WriteLine("pubKey " + taprootaddress.PubKey.ToString());
+			Console.WriteLine("pubKey  " + bitcoinaddress.ToString());
+
+
+
 			/*
 			 * 
 			 * Test Vectors
