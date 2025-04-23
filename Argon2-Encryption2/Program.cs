@@ -16,7 +16,7 @@ class Program
 			string originalText = "This is a secret message 123456 7890 1234567890!";
 			string password = "MySecurePassword123";
 
-			Stopwatch stopwatch = new Stopwatch();
+			System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
 			stopwatch.Start();
 			string encryptedBase64 = EncryptText(originalText, password);
@@ -59,7 +59,7 @@ class Program
 		byte[] key = DeriveKey(password, salt);
 
 		// Encrypt the text
-		byte[] plaintext = Encoding.UTF8.GetBytes(text);
+		byte[] plaintext = System.Text.Encoding.UTF8.GetBytes(text);
 		byte[] ciphertext = new byte[plaintext.Length];
 		byte[] tag = new byte[16]; // 128-bit tag
 
@@ -122,7 +122,7 @@ class Program
 
 	static byte[] DeriveKey(string password, byte[] salt)
 	{
-		using (var argon2 = new Konscious.Security.Cryptography.Argon2id(Encoding.UTF8.GetBytes(password)))
+		using (Konscious.Security.Cryptography.Argon2id argon2 = new Konscious.Security.Cryptography.Argon2id(Encoding.UTF8.GetBytes(password)))
 		{
 			argon2.Salt = salt;
 			argon2.DegreeOfParallelism = 8; // 8 threads (match CPU cores)
