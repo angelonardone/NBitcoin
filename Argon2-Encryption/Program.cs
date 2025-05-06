@@ -38,6 +38,10 @@ class Program
 			double decryptTime = stopwatch.Elapsed.TotalSeconds;
 			Console.WriteLine($"Decryption Time: {decryptTime:F3} seconds");
 			Console.WriteLine($"Decrypted: {decryptedText}");
+
+			var hash = CreateMasterSeed(password, "hola como estas 123");
+			Console.WriteLine($"MasterSeed: {hash}");
+
 		}
 		catch (Exception ex)
 		{
@@ -132,5 +136,28 @@ class Program
 			rng.GetBytes(bytes);
 		}
 		return bytes;
+	}
+
+	static string CreateMasterSeed(string password, string salt)
+	{
+		var config = new Argon2Config
+		{
+			Type = Argon2Type.DataDependentAddressing, // Use Argon2id for balanced security
+			Version = Argon2Version.Nineteen,
+			TimeCost = 10, // 10 iterations
+			MemoryCost = 65536 * 8, // Memory usage in kibibytes (64 MB) * 12 = 7 seconds encrypt and 6 seconds decrypt
+									//MemoryCost = 65536 * 12, // Memory usage in kibibytes (64 MB) * 12 = 10 seconds encrypt and 9 seconds decrypt
+			Threads = 8, // 8 threads (match CPU cores)
+			Password = Encoding.UTF8.GetBytes(password),
+			Salt = Encoding.UTF8.GetBytes(salt), // Explicitly set the salt
+			HashLength = 64 // 256-bit key for AES
+		};
+		using (var argon2 = new Argon2(config))
+		using (SecureArray<byte> hash = argon2.Hash())
+		{
+			return System.Convert.ToHexString(hash.Buffer);
+		}
+		
+
 	}
 }
