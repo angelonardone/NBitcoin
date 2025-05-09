@@ -139,8 +139,6 @@ namespace DistricutedCryptographyLib
 					return result;
 				}
 
-				Console.WriteLine($"[Decrypt] Using key: {base64Key.Substring(0, Math.Min(8, base64Key.Length))}...");
-				Console.WriteLine($"[Decrypt] Total encrypted payload length: {encryptedPayloadBytes.Length} bytes");
 
 				if (encryptedPayloadBytes.Length < NonceSizeBytes + TagSizeBytes)
 				{
@@ -155,10 +153,6 @@ namespace DistricutedCryptographyLib
 				Buffer.BlockCopy(encryptedPayloadBytes, 0, nonce, 0, NonceSizeBytes);
 				Buffer.BlockCopy(encryptedPayloadBytes, NonceSizeBytes, cipherTextBytes, 0, cipherTextBytes.Length);
 				Buffer.BlockCopy(encryptedPayloadBytes, NonceSizeBytes + cipherTextBytes.Length, tag, 0, TagSizeBytes);
-
-				Console.WriteLine($"[Decrypt] Extracted Nonce length: {nonce.Length} bytes");
-				Console.WriteLine($"[Decrypt] Extracted Ciphertext length: {cipherTextBytes.Length} bytes");
-				Console.WriteLine($"[Decrypt] Extracted Tag length: {tag.Length} bytes");
 
 				byte[] decryptedBytes = new byte[cipherTextBytes.Length];
 
@@ -179,7 +173,6 @@ namespace DistricutedCryptographyLib
 			}
 			catch (Exception ex) // Catch any other unexpected exceptions
 			{
-				Console.WriteLine($"[Decrypt] Unexpected error: {ex.ToString()}"); // Log the full error internally if desired
 				result.ErrorMessage = $"An unexpected error occurred during decryption: {ex.Message}";
 			}
 			return result;
