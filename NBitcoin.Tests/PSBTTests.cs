@@ -8,6 +8,8 @@ using System.Collections.Generic;
 using System.Linq;
 using static NBitcoin.Tests.Comparer;
 using Xunit.Abstractions;
+using System.Net.Http;
+using System.Threading.Tasks;
 
 namespace NBitcoin.Tests
 {
@@ -54,6 +56,7 @@ namespace NBitcoin.Tests
 				var bob = bobMaster.Derive(new KeyPath("4/5/6"));
 
 				var funding = network.CreateTransaction();
+				funding.Inputs.Add();
 				funding.Outputs.Add(Money.Coins(1.0m), alice);
 				funding.Outputs.Add(Money.Coins(1.5m), bob);
 
@@ -192,6 +195,15 @@ namespace NBitcoin.Tests
 				Assert.Equal(psbt, psbt2, ComparerInstance);
 			}
 		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void FixVersionParsingBug()
+		{
+			var tx = Transaction.Parse("39a75f190001010000000000000000000000000000000000000000000000000000000000000000ffffffff4903d7ae0d04970a256861627a637862fabe6d6d86846e235af48afb776d0a32cb278930b7dd601fb0e05011789ef233a3e0e7d1010000000000000012b299f4e40000000000ffffffffffffffff02ec12bb1200000000160014b6f3cfc20084e3b9f0d12b0e6f9da8fcbcf5a2d90000000000000000266a24aa21a9edc8a9c6157fb538507480083f8f5144e2f73d1bd9b6b5fabde17bd08ff524b7100120000000000000000000000000000000000000000000000000000000000000000000000000", Network.Main);
+			Assert.Equal("889d4fed1ec4a775d02082b5ff727f48d93013469db709d8d435e15b173118f3", tx.GetHash().ToString());
+		}
+
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
 		public void AddCoinsShouldNotRemoveInfoFromPSBT()
@@ -631,10 +643,14 @@ namespace NBitcoin.Tests
 			var accountExtKey = masterExtkey.Derive(new KeyPath("0'/0'/0'"));
 			var accountRootedKeyPath = new KeyPath("0'/0'/0'").ToRootedKeyPath(masterExtkey);
 			uint hardenedFlag = 0x80000000U;
-		retry:
+			retry:
 			Transaction funding = masterExtkey.Network.CreateTransaction();
+			funding.Inputs.Add();
 			funding.Outputs.Add(Money.Coins(2.0m), accountExtKey.Derive(0 | hardenedFlag).ScriptPubKey);
 			funding.Outputs.Add(Money.Coins(2.0m), accountExtKey.Derive(1 | hardenedFlag).ScriptPubKey);
+#if HAS_SPAN
+			funding.Outputs.Add(Money.Coins(2.0m), accountExtKey.Derive(2 | hardenedFlag).GetPublicKey().GetScriptPubKey(ScriptPubKeyType.TaprootBIP86));
+#endif
 
 			Transaction tx = masterExtkey.Network.CreateTransaction();
 			tx.Version = 2;
@@ -642,11 +658,18 @@ namespace NBitcoin.Tests
 			tx.Outputs.Add(Money.Coins(1.00000000m), new Script(Encoders.Hex.DecodeData("001400aea9a2e5f0f876a588df5546e8742d1d87008f")));
 			tx.Inputs.Add(funding, 0);
 			tx.Inputs.Add(funding, 1);
+#if HAS_SPAN
+			tx.Inputs.Add(funding, 2);
+#endif
 
 			var psbt = PSBT.FromTransaction(tx, Network.TestNet);
 			psbt.AddTransactions(funding);
 			psbt.AddKeyPath(accountExtKey, Tuple.Create(new KeyPath(0 | hardenedFlag), funding.Outputs[0].ScriptPubKey),
 										   Tuple.Create(new KeyPath(1 | hardenedFlag), funding.Outputs[1].ScriptPubKey));
+#if HAS_SPAN
+			var tpPk = accountExtKey.Derive(2 | hardenedFlag).GetPublicKey().GetTaprootFullPubKey();
+			psbt.Inputs[2].HDTaprootKeyPaths.Add(tpPk.InternalKey.AsTaprootPubKey(), new TaprootKeyPath(new(accountExtKey.GetPublicKey().GetHDFingerPrint(), new(2 | hardenedFlag))));
+#endif
 			Assert.Equal(new KeyPath(0 | hardenedFlag), psbt.Inputs[0].HDKeyPaths[accountExtKey.Derive(0 | hardenedFlag).GetPublicKey()].KeyPath);
 			Assert.Equal(new KeyPath(1 | hardenedFlag), psbt.Inputs[1].HDKeyPaths[accountExtKey.Derive(1 | hardenedFlag).GetPublicKey()].KeyPath);
 			Assert.Equal(accountExtKey.GetPublicKey().GetHDFingerPrint(), psbt.Inputs[0].HDKeyPaths[accountExtKey.Derive(0 | hardenedFlag).GetPublicKey()].MasterFingerprint);
@@ -662,6 +685,9 @@ namespace NBitcoin.Tests
 			Assert.Equal(psbt.GlobalXPubs.Single().Value, rebasingKeyPath);
 			Assert.Equal(new KeyPath("0'/0'/0'").Derive(0 | hardenedFlag), psbt.Inputs[0].HDKeyPaths[accountExtKey.Derive(0 | hardenedFlag).GetPublicKey()].KeyPath);
 			Assert.Equal(new KeyPath("0'/0'/0'").Derive(1 | hardenedFlag), psbt.Inputs[1].HDKeyPaths[accountExtKey.Derive(1 | hardenedFlag).GetPublicKey()].KeyPath);
+#if HAS_SPAN
+			Assert.Equal(new KeyPath("0'/0'/0'").Derive(2 | hardenedFlag), psbt.Inputs[2].HDTaprootKeyPaths[tpPk.InternalKey.AsTaprootPubKey()].RootedKeyPath.KeyPath);
+#endif
 			Assert.Equal(masterExtkey.GetPublicKey().GetHDFingerPrint(), psbt.Inputs[0].HDKeyPaths[accountExtKey.Derive(0 | hardenedFlag).GetPublicKey()].MasterFingerprint);
 			Assert.Equal(masterExtkey.GetPublicKey().GetHDFingerPrint(), psbt.Inputs[1].HDKeyPaths[accountExtKey.Derive(1 | hardenedFlag).GetPublicKey()].MasterFingerprint);
 

@@ -529,16 +529,16 @@ namespace NBitcoin.WalletPolicies
 		/// <param name="DepositIndex"></param>
 		/// <param name="ChangeIndex"></param>
 		/// <param name="Target"></param>
-		/// <param name="ShortForm">If <0;1>/* path should be be noted /** instead</param>
+		/// <param name="ShortForm">If &lt;0;1&gt;/* path should be be noted /** instead</param>
 		public record MultipathNode(int DepositIndex, int ChangeIndex, MiniscriptNode Target, bool ShortForm) : MiniscriptNode
 		{
-			internal static MultipathNode Parse(string str, Network network)
+			public static MultipathNode Parse(string str, Network network)
 			{
 				if (TryParse(str, network, out var node))
 					return node;
 				throw new FormatException("Invalid MultipathNode");
 			}
-			internal static bool TryParse(string str, Network network, [MaybeNullWhen(false)] out MultipathNode node)
+			public static bool TryParse(string str, Network network, [MaybeNullWhen(false)] out MultipathNode node)
 			{
 				ArgumentNullException.ThrowIfNull(str);
 				ArgumentNullException.ThrowIfNull(network);

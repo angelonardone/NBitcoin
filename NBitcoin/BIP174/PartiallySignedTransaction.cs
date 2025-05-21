@@ -1003,9 +1003,9 @@ namespace NBitcoin
 			foreach (var input in transaction.Inputs)
 			{
 				if (!Script.IsNullOrEmpty(input.ScriptSig))
-					throw new ArgumentException("The transaction should not have any scriptSig set", nameof(transaction));
+					throw new ArgumentException("The transaction should not have any scriptSig set. You can use Transaction.RemoveSignatures() to remove them.", nameof(transaction));
 				if (!WitScript.IsNullOrEmpty(input.WitScript))
-					throw new ArgumentException("The transaction should not have any witScript set", nameof(transaction));
+					throw new ArgumentException("The transaction should not have any witScript set. You can use Transaction.RemoveSignatures() to remove them.", nameof(transaction));
 			}
 			return version switch
 			{
@@ -1268,6 +1268,12 @@ namespace NBitcoin
 						{
 							o.Key.HDKeyPaths.Remove(ecdsa);
 							o.Key.HDKeyPaths.Add(ecdsa, newRoot.Derive(keyPath.RootedKeyPath.KeyPath));
+						}
+						else if (keyPath.PubKey is TaprootPubKey taproot)
+						{
+							var kp = o.Key.HDTaprootKeyPaths[taproot];
+							o.Key.HDTaprootKeyPaths.Remove(taproot);
+							o.Key.HDTaprootKeyPaths.Add(taproot, new TaprootKeyPath(newRoot.Derive(keyPath.RootedKeyPath.KeyPath), kp.LeafHashes));
 						}
 					}
 				}
