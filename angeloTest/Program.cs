@@ -28,7 +28,7 @@ namespace angeloNBitcoin
 		{
 			//private_from_wif();
 			//brain_wallet();
-			//brain_wallet_2();
+			brain_wallet_2();
 			//brain_wallet_3();
 			//page_1();
 			//page_2();
@@ -71,7 +71,7 @@ namespace angeloNBitcoin
 			//from_transaction_bulder();
 			//verify_addressess();
 			//test_server_node();
-			rpc_all_transaction_on_block();
+			//rpc_all_transaction_on_block();
 			//test_server_node_2();
 			//getPubKeyFromAddress();
 		}

@@ -57,7 +57,7 @@ namespace NBitcoinTraining
 
 			for (int i = 0; i < peers; i++)
 			{
-				nonces[i] = musig.GenerateNonce(ecPubKeys[i]);
+				nonces[i] = musig.GenerateNonce(ecPrivateKeys[i]);
 				pubNonces[i] = nonces[i].CreatePubNonce();
 				strPubNonces[i] = Encoders.Hex.EncodeData(pubNonces[i].ToBytes());
 				Console.WriteLine($"pubNonce {i}: {strPubNonces[i]}");

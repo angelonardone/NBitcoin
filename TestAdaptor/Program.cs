@@ -213,8 +213,16 @@ namespace NBitcoinTraining
 
 			var ctx = Context.Instance;
 
-			var secret = Encoders.Hex.DecodeData("527b33ce0c67ec2cc12ba7bb2e48dda66884a5c4b6d110be894a10802b21b3d6");
-			var secret_sha256 = Hashes.DoubleSHA256(secret);
+			var secret = NBitcoin.DataEncoders.Encoders.Hex.DecodeData("2deced234907323e5381d2baebe7a5fa8bf3805896972ff111201250189ba8fc");
+			//var secret = Convert.FromBase64String("LeztI0kHMj5TgdK66+el+ovzgFiWly/xESASUBibqPw=");
+			Console.WriteLine("secret:" + NBitcoin.DataEncoders.Encoders.Hex.EncodeData(secret)); // 2deced234907323e5381d2baebe7a5fa8bf3805896972ff111201250189ba8fc
+			string base64String = Convert.ToBase64String(secret);
+			Console.WriteLine("secret base64 :" + base64String); //LeztI0kHMj5TgdK66+el+ovzgFiWly/xESASUBibqPw=
+			var secret_sha256 = NBitcoin.Crypto.Hashes.DoubleSHA256(secret);
+			string str_secret_sha256 = NBitcoin.DataEncoders.Encoders.Hex.EncodeData(secret_sha256.ToBytes());
+			Console.WriteLine("secret_sha256:" + str_secret_sha256); // dca349586dc47cdbb7afbeb5357576311dbc011d74b32361c3c585148ef35368
+			var secret_sha256_2 = NBitcoin.DataEncoders.Encoders.Hex.DecodeData("dca349586dc47cdbb7afbeb5357576311dbc011d74b32361c3c585148ef35368");
+
 
 			var userPrivateKeyHex = "527b33ce0c67ec2cc12ba7bb2e48dda66884a5c4b6d110be894a10802b21b3d6";
 			var user_eckey = ctx.CreateECPrivKey(Encoders.Hex.DecodeData(userPrivateKeyHex));
@@ -231,13 +239,17 @@ namespace NBitcoinTraining
 
 
 
+			//DateTime today = DateTime.Today;
+			//LockTime target = (int) ((DateTimeOffset) today).ToUnixTimeSeconds();
 
 
-			LockTime target = 110;
+			LockTime target = (int) 110;
+
 			/*
 			TapScript Script = new Script(OpcodeType.OP_HASH256, Op.GetPushOp(secret_sha256.ToBytes()), OpcodeType.OP_EQUALVERIFY, Op.GetPushOp(user_ecPubKey.ToBytes()), OpcodeType.OP_CHECKSIG).ToTapScript(TapLeafVersion.C0); // just signature
 			*/
 			TapScript Script =  new Script(Op.GetPushOp(target.Value), OpcodeType.OP_CHECKLOCKTIMEVERIFY, OpcodeType.OP_DROP, OpcodeType.OP_HASH256, Op.GetPushOp(secret_sha256.ToBytes()), OpcodeType.OP_EQUALVERIFY, Op.GetPushOp(user_ecPubKey.ToBytes()), OpcodeType.OP_CHECKSIG).ToTapScript(TapLeafVersion.C0);
+			Console.WriteLine("SCRIPT:" + Script.ToString());
 
 			var scriptWeightsList = new List<(UInt32, TapScript)>
 			{
@@ -288,7 +300,7 @@ namespace NBitcoinTraining
 
 					TaprootExecutionData extectionData;
 
-					// ADDRESS PATH
+					//// ADDRESS PATH
 					if (useKeySpend)
 						extectionData = new TaprootExecutionData(0) { SigHash = sighash };
 					else
