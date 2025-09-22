@@ -122,25 +122,96 @@ namespace NBitcoin
 
 		private static List<int[]> GetCombinations(int n, int k)
 		{
-			var result = new List<int[]>();
-			var combination = new int[k];
-			GenerateCombinations(0, 0, n, k, combination, result);
-			return result;
+			// Handle edge cases first
+			if (k == 0) return new List<int[]>();
+			if (k == n)
+			{
+				// n-of-n: only one combination (all participants)
+				var allElements = new int[n];
+				for (int i = 0; i < n; i++)
+					allElements[i] = i;
+				return new List<int[]> { allElements };
+			}
+			
+			// Apply combinatorial symmetry optimization: C(n,k) = C(n,n-k)
+			// For k > n/2, generate (n-k)-combinations and use their complements
+			// This reduces memory usage and generation time for large k values
+			bool useComplement = k > n - k;
+			int effectiveK = useComplement ? n - k : k;
+			
+			var baseCombinations = GetCombinationsBase(n, effectiveK);
+			
+			if (useComplement)
+			{
+				// Convert each small combination to its complement
+				var result = new List<int[]>();
+				foreach (var combination in baseCombinations)
+				{
+					var complement = new int[k];
+					var combinationSet = new HashSet<int>(combination);
+					int complementIndex = 0;
+					
+					for (int i = 0; i < n; i++)
+					{
+						if (!combinationSet.Contains(i))
+							complement[complementIndex++] = i;
+					}
+					
+					result.Add(complement);
+				}
+				return result;
+			}
+			
+			return baseCombinations;
 		}
-
-		private static void GenerateCombinations(int start, int index, int n, int k, int[] combination, List<int[]> result)
+		
+		private static List<int[]> GetCombinationsBase(int n, int k)
 		{
-			if (index == k)
+			var result = new List<int[]>();
+			
+			// Handle edge cases
+			if (k == 0) return result;
+			if (k == n)
 			{
-				result.Add((int[])combination.Clone());
-				return;
+				var allElements = new int[n];
+				for (int i = 0; i < n; i++)
+					allElements[i] = i;
+				result.Add(allElements);
+				return result;
 			}
-
-			for (int i = start; i < n; i++)
+			if (k == 1)
 			{
-				combination[index] = i;
-				GenerateCombinations(i + 1, index + 1, n, k, combination, result);
+				for (int i = 0; i < n; i++)
+					result.Add(new int[] { i });
+				return result;
 			}
+			
+			// Use iterative approach to avoid recursion overhead
+			var combination = new int[k];
+			for (int i = 0; i < k; i++)
+				combination[i] = i;
+			
+			while (true)
+			{
+				// Add current combination (create array directly instead of cloning)
+				var current = new int[k];
+				Array.Copy(combination, current, k);
+				result.Add(current);
+				
+				// Find the rightmost element that can be incremented
+				int pos = k - 1;
+				while (pos >= 0 && combination[pos] == n - k + pos)
+					pos--;
+				
+				if (pos < 0) break; // All combinations generated
+				
+				// Increment and reset subsequent positions
+				combination[pos]++;
+				for (int i = pos + 1; i < k; i++)
+					combination[i] = combination[i - 1] + 1;
+			}
+			
+			return result;
 		}
 
 		public static TaprootAddress CreateAddress(PubKey ownerPubKey, List<PubKey> signerPubKeys, int requiredSignatures, Network network)

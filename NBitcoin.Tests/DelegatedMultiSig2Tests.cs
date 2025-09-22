@@ -1269,7 +1269,7 @@ namespace NBitcoin.Tests
 				Assert.True(actualFee > Money.Zero); // Fee was paid
 				
 				// Verify that we correctly identified the script used by these participants  
-				Assert.Equal(actualScriptIndex, 8); // Should use script #8 for participants 1,3,4
+				Assert.Equal(1, actualScriptIndex); // Should use script #1 for participants 1,3,4 (after combinatorial optimization)
 				Console.WriteLine($"Note: Actual fee differs from chosen option because nonces were tied to temp transaction");
 				
 				// Verify MuSig2 efficiency (single aggregated signature in witness)

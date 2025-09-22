@@ -175,3 +175,51 @@ The codebase includes comprehensive testing applications:
 - `QuickMultisigExecutorDemo.cs`: Configuration testing across all multisig types
 - `SegWitMultiSigTests.cs`: Comprehensive test suite for SegWit multisig
 - Actual blockchain transaction verification and size measurement
+
+## Auto-approved Commands for Claude Code
+To allow Claude to work autonomously without asking for permissions, these command patterns are auto-approved:
+
+### Testing and Building
+- `Bash(dotnet test:*)` - Run any dotnet test command
+- `Bash(dotnet build:*)` - Run any dotnet build command  
+- `Bash(dotnet run:*)` - Run any dotnet run command
+- `Bash(dotnet clean:*)` - Clean build artifacts
+
+### File Operations
+- `Bash(mkdir:*)` - Create directories
+- `Bash(cp:*)` - Copy files
+- `Bash(mv:*)` - Move/rename files
+- `Bash(rm:*)` - Remove files
+- `Bash(ls:*)` - List directory contents
+- `Bash(find:*)` - Find files and directories
+
+### Git Operations  
+- `Bash(git status)` - Check git status
+- `Bash(git add:*)` - Stage files
+### no - `Bash(git commit:*)` - Create commits
+- `Bash(git diff:*)` - Show differences
+- `Bash(git log:*)` - View commit history
+- `Bash(git checkout:*)` - Switch branches/checkout files
+
+### Development Tools
+- `Bash(csc:*)` - Compile C# files
+- `Bash(mono:*)` - Run .NET executables with Mono
+- `Bash(python3:*)` - Run Python scripts
+- `Bash(node:*)` - Run Node.js scripts
+
+### System and Analysis
+- `Bash(timeout:*)` - Run commands with timeout
+- `Bash(gtimeout:*)` - Run commands with timeout (macOS)
+- `Bash(export:*)` - Set environment variables  
+- `Bash(which:*)` - Find command locations
+- `Bash(grep:*)` - Search text patterns
+- `Bash(cat:*)` - Display file contents
+- `Bash(head:*)` - Show file beginning
+- `Bash(tail:*)` - Show file end
+
+### Web and Network
+- `WebFetch(domain:bips.dev)` - Fetch from Bitcoin BIP documentation
+- `WebFetch(domain:github.com)` - Fetch from GitHub repositories
+- `WebFetch(domain:docs.microsoft.com)` - Fetch from Microsoft docs
+- `WebFetch(domain:stackoverflow.com)` - Fetch from Stack Overflow
+- `WebFetch(domain:bitcoin.org)` - Fetch from Bitcoin.org
