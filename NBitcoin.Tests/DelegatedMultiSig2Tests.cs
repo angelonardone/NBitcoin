@@ -906,89 +906,121 @@ namespace NBitcoin.Tests
 				var spentOutput = tx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == address.ScriptPubKey);
 				var coin = new Coin(spentOutput);
 
-				// Scenario: High network congestion, need conservative approach
+				// Scenario: High network congestion, dual-transaction approach with MuSig2
 				var paymentAddress = rpc.GetNewAddress();
 				var paymentAmount = Money.Coins(0.8m);
 				var changeAddress = rpc.GetNewAddress();
-				
-				// Create temp transaction for size estimation
-				var tempTx = Network.RegTest.CreateTransaction();
-				tempTx.Inputs.Add(new OutPoint(tx, spentOutput.N));
-				tempTx.Outputs.Add(paymentAmount, paymentAddress);
-				tempTx.Outputs.Add(Money.Coins(0.19m), changeAddress);
-				
-				var tempBuilder = multiSig.CreateSignatureBuilder(tempTx, new[] { coin });
-				var baseEstimate = tempBuilder.GetSizeEstimate(0);
-				var cheapestScriptIndex = baseEstimate.ScriptSpendVirtualSizes
-					.OrderBy(kvp => kvp.Value)
-					.First().Key;
-				
-				// Different risk tolerance levels
-				var scenarios = new []
-				{
-					new { Name = "Conservative (50% buffer)", Buffer = 50.0 },
-					new { Name = "Very Conservative (75% buffer)", Buffer = 75.0 },
-					new { Name = "Emergency (100% buffer)", Buffer = 100.0 }
-				};
-				
 				var feeRate = new FeeRate(Money.Satoshis(80), 1); // High fee rate due to congestion
-				
-				foreach (var scenario in scenarios)
-				{
-					var customEstimate = tempBuilder.GetSizeEstimateWithCustomBuffer(0, scenario.Buffer);
-					var vsize = customEstimate.ScriptSpendVirtualSizesWithBuffer[cheapestScriptIndex];
-					var fee = feeRate.GetFee(vsize);
-					var change = coin.Amount - paymentAmount - fee;
-					
-					// Verify we have enough funds
-					Assert.True(change > Money.Zero, $"Insufficient funds for {scenario.Name}");
-				}
-				
-				// Choose the 50% buffer scenario and execute
-				var chosenEstimate = tempBuilder.GetSizeEstimateWithCustomBuffer(0, 50.0);
-				var chosenFee = feeRate.GetFee(chosenEstimate.ScriptSpendVirtualSizesWithBuffer[cheapestScriptIndex]);
-				var finalChange = coin.Amount - paymentAmount - chosenFee;
-				
-				// Create and sign the actual transaction with MuSig2
-				var finalTx = Network.RegTest.CreateTransaction();
-				finalTx.Inputs.Add(new OutPoint(tx, spentOutput.N));
-				finalTx.Outputs.Add(paymentAmount, paymentAddress);
-				finalTx.Outputs.Add(finalChange, changeAddress);
-				
-				var finalBuilder = multiSig.CreateSignatureBuilder(finalTx, new[] { coin });
-				
-				// Generate nonces for all signers first
-				var nonceData0 = finalBuilder.GenerateNonce(signerKeys[0], 0, TaprootSigHash.All);
-				var nonceData1 = finalBuilder.GenerateNonce(signerKeys[1], 0, TaprootSigHash.All);
-				var nonceData2 = finalBuilder.GenerateNonce(signerKeys[2], 0, TaprootSigHash.All);
-				var nonceData3 = finalBuilder.GenerateNonce(signerKeys[3], 0, TaprootSigHash.All);
-				var nonceData4 = finalBuilder.GenerateNonce(signerKeys[4], 0, TaprootSigHash.All);
 
-				// Add all nonces
-				finalBuilder.AddNonces(nonceData0, 0);
-				finalBuilder.AddNonces(nonceData1, 0);
-				finalBuilder.AddNonces(nonceData2, 0);
-				finalBuilder.AddNonces(nonceData3, 0);
-				finalBuilder.AddNonces(nonceData4, 0);
+				// Participating signers: 0, 2, 4 (MuSig2 requires exactly k signers)
+				var participatingSignerIndices = new int[] { 0, 2, 4 };
 
-				// Sign with 3 signers (3-of-5)
-				var sigData1 = finalBuilder.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
-				var sigData2 = finalBuilder.SignWithSigner(signerKeys[2], 0, TaprootSigHash.All);
-				var sigData3 = finalBuilder.SignWithSigner(signerKeys[4], 0, TaprootSigHash.All);
-				
-				Assert.True(sigData3.IsComplete);
-				var completedTx = finalBuilder.FinalizeTransaction(0);
-				
-				// Verify and broadcast
-				var actualFee = coin.Amount - completedTx.Outputs.Sum(o => (Money)o.Value);
-				
-				rpc.SendRawTransaction(completedTx);
-				
+				Console.WriteLine($"Dual-Transaction MuSig2 Progressive Signing Scenario:");
+				Console.WriteLine($"Network Conditions: High congestion, {feeRate.SatoshiPerByte} sat/vbyte");
+				Console.WriteLine($"Payment: {paymentAmount}");
+				Console.WriteLine($"Available for fees: {coin.Amount - paymentAmount}");
+				Console.WriteLine($"Participating signers: {string.Join(", ", participatingSignerIndices)}");
+				Console.WriteLine($"");
+
+				// Create TWO transactions (base and buffered 50%)
+				var (baseTx, bufferedTx) = multiSig.CreateDualTransactions(
+					coin,
+					paymentAddress,
+					paymentAmount,
+					changeAddress,
+					feeRate,
+					participatingSignerIndices,
+					bufferPercentage: 50.0);
+
+				var baseFee = coin.Amount - baseTx.Outputs.Sum(o => (Money)o.Value);
+				var bufferedFee = coin.Amount - bufferedTx.Outputs.Sum(o => (Money)o.Value);
+
+				Console.WriteLine($"Transaction A (Base):");
+				Console.WriteLine($"  Fee: {baseFee} ({baseFee.Satoshi} sats)");
+				Console.WriteLine($"  Change: {baseTx.Outputs[1].Value}");
+				Console.WriteLine($"");
+
+				Console.WriteLine($"Transaction B (Buffered 50%):");
+				Console.WriteLine($"  Fee: {bufferedFee} ({bufferedFee.Satoshi} sats)");
+				Console.WriteLine($"  Change: {bufferedTx.Outputs[1].Value}");
+				Console.WriteLine($"");
+
+				// Create builders for BOTH transactions
+				var builderBase = multiSig.CreateSignatureBuilder(baseTx, new[] { coin });
+				var builderBuffered = multiSig.CreateSignatureBuilder(bufferedTx, new[] { coin });
+
+				// PHASE 1: Nonce Exchange for BOTH transactions
+				Console.WriteLine($"Phase 1: Nonce Exchange for both transactions");
+				var nonceDataBase0 = builderBase.GenerateNonce(signerKeys[0], 0, TaprootSigHash.All);
+				var nonceDataBase2 = builderBase.GenerateNonce(signerKeys[2], 0, TaprootSigHash.All);
+				var nonceDataBase4 = builderBase.GenerateNonce(signerKeys[4], 0, TaprootSigHash.All);
+
+				var nonceDataBuffered0 = builderBuffered.GenerateNonce(signerKeys[0], 0, TaprootSigHash.All);
+				var nonceDataBuffered2 = builderBuffered.GenerateNonce(signerKeys[2], 0, TaprootSigHash.All);
+				var nonceDataBuffered4 = builderBuffered.GenerateNonce(signerKeys[4], 0, TaprootSigHash.All);
+
+				// Add nonces to both builders
+				builderBase.AddNonces(nonceDataBase0, 0);
+				builderBase.AddNonces(nonceDataBase2, 0);
+				builderBase.AddNonces(nonceDataBase4, 0);
+
+				builderBuffered.AddNonces(nonceDataBuffered0, 0);
+				builderBuffered.AddNonces(nonceDataBuffered2, 0);
+				builderBuffered.AddNonces(nonceDataBuffered4, 0);
+				Console.WriteLine($"  All nonces exchanged for both transactions");
+				Console.WriteLine($"");
+
+				// PHASE 2: Each signer signs BOTH transactions
+				Console.WriteLine($"Phase 2: Collecting signatures for both transactions");
+				builderBase.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
+				builderBuffered.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
+				Console.WriteLine($"  Signer 0: signed both transactions");
+
+				builderBase.SignWithSigner(signerKeys[2], 0, TaprootSigHash.All);
+				builderBuffered.SignWithSigner(signerKeys[2], 0, TaprootSigHash.All);
+				Console.WriteLine($"  Signer 2: signed both transactions");
+
+				var sigDataBase4 = builderBase.SignWithSigner(signerKeys[4], 0, TaprootSigHash.All);
+				var sigDataBuffered4 = builderBuffered.SignWithSigner(signerKeys[4], 0, TaprootSigHash.All);
+				Console.WriteLine($"  Signer 4: signed both transactions");
+				Console.WriteLine($"");
+
+				Assert.True(sigDataBase4.IsComplete, "Base transaction should be complete");
+				Assert.True(sigDataBuffered4.IsComplete, "Buffered transaction should be complete");
+
+				// PHASE 3: Finalize BOTH transactions
+				var completedBaseTx = builderBase.FinalizeTransaction(0);
+				var completedBufferedTx = builderBuffered.FinalizeTransaction(0);
+
+				// Final signer (signer 4) now has TWO options to choose from
+				Console.WriteLine($"Phase 3: Final signer decision point");
+				Console.WriteLine($"  Option A (Base): Fee = {baseFee}, Change = {completedBaseTx.Outputs[1].Value}");
+				Console.WriteLine($"  Option B (Buffered): Fee = {bufferedFee}, Change = {completedBufferedTx.Outputs[1].Value}");
+				Console.WriteLine($"");
+
+				// Simulate decision: choose buffered for high congestion
+				var chosenTx = completedBufferedTx;
+				Console.WriteLine($"Decision: Broadcasting BUFFERED transaction due to high congestion");
+				Console.WriteLine($"  Final fee: {bufferedFee}");
+				Console.WriteLine($"  Final change: {chosenTx.Outputs[1].Value}");
+
+				// Broadcast chosen transaction
+				rpc.SendRawTransaction(chosenTx);
+
 				// Verify the transaction was constructed correctly
-				Assert.Equal(paymentAmount, completedTx.Outputs[0].Value);
-				Assert.True(completedTx.Outputs[1].Value > Money.Zero);
-				Assert.True(actualFee > Money.Zero);
-				Assert.True(actualFee <= chosenFee + Money.Satoshis(1000)); // Should be close to estimated fee
+				Assert.Equal(paymentAmount, chosenTx.Outputs[0].Value);
+				Assert.True(chosenTx.Outputs[1].Value > Money.Zero);
+
+				// Verify BOTH transactions are valid (could have broadcast either one)
+				var actualBaseFee = coin.Amount - completedBaseTx.Outputs.Sum(o => (Money)o.Value);
+				var actualBufferedFee = coin.Amount - completedBufferedTx.Outputs.Sum(o => (Money)o.Value);
+				Assert.True(actualBufferedFee > actualBaseFee, "Buffered transaction should have higher fee");
+
+				Console.WriteLine($"");
+				Console.WriteLine($"SUCCESS: Dual-transaction MuSig2 workflow completed");
+				Console.WriteLine($"  - Both transactions fully signed with MuSig2");
+				Console.WriteLine($"  - Final signer chose the appropriate one for network conditions");
+				Console.WriteLine($"  - Alternative transaction is available if needed");
 			}
 		}
 

@@ -348,6 +348,13 @@ namespace NBitcoinTraining
 			var addr = GenerateScriptAddress(min_num_signatures, Network.RegTest, ownerPubKey, pubKeys);
 			Console.WriteLine($"GenerateScriptAddress  {addr.ToString()}");
 
+			//////////////// NEW DelegatedMultSig
+			var multiSig = new DelegatedMultiSig(ownerPubKey, pubKeys.ToList(), min_num_signatures, Network.RegTest);
+			var addr2 = multiSig.Address;
+			Console.WriteLine($"DelegatedMultiSig  {addr2.ToString()}");
+			Console.WriteLine($"Are both same Taproot Address  {addr.Equals(addr2)}");
+			//////////////// NEW DelegatedMultSig
+
 			var (scriptWeightsGenerated, treeInfo, addrGenerated) = GenerateScriptPubKey(min_num_signatures, true, Network.RegTest, ownerPubKey, pubKeys);
 			Console.WriteLine($"Are both same Taproot Address  {addr.Equals(addrGenerated)}");
 
@@ -402,6 +409,12 @@ namespace NBitcoinTraining
 				var tx = rpc.GetRawTransaction(txid);
 				Console.WriteLine("input transaction: " + tx.ToString());
 
+				//////////////// NEW DelegatedMultSig
+				var spentOutput = tx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == multiSig.Address.ScriptPubKey);
+				var coin = new Coin(spentOutput);
+				var all_coins = new System.Collections.Generic.List<NBitcoin.Coin>();
+				all_coins.Add(coin);
+				//////////////// NEW DelegatedMultSig
 
 				var spender = Transaction.Create(Network.RegTest);
 

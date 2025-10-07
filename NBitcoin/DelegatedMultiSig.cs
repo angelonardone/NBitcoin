@@ -11,6 +11,81 @@ using NBitcoin.Secp256k1;
 namespace NBitcoin
 {
 #if HAS_SPAN
+	/// <summary>
+	/// DelegatedMultiSig: Taproot-based k-of-n multisig using script path combinations.
+	///
+	/// PROGRESSIVE SIGNATURE COLLECTION WORKFLOW:
+	/// ==========================================
+	///
+	/// This implementation supports a progressive signing protocol where signatures are collected
+	/// incrementally, with fee estimation narrowing down as more signers participate. This solves
+	/// the problem of accurate fee calculation in multisig scenarios.
+	///
+	/// THE PROBLEM:
+	/// ------------
+	/// In traditional multisig, you don't know which k signers will participate until they sign.
+	/// Different signing combinations may have different transaction sizes (and thus fees).
+	/// If you estimate fees based on one combination but collect signatures from a different one,
+	/// your transaction may underpay or overpay fees.
+	///
+	/// THE SOLUTION - Progressive Signature Protocol:
+	/// -----------------------------------------------
+	///
+	/// STEP 1: First Signer
+	///   - Receives unsigned transaction
+	///   - System identifies ALL script combinations containing this signer
+	///   - For each combination, calculates TWO fee scenarios:
+	///     * Base: exact virtual size
+	///     * Buffered: virtual size + buffer% (e.g., 15%)
+	///   - First signer signs ALL applicable combinations (both base and buffered)
+	///   - Creates PartialSignatureData with all signatures
+	///   - Passes to next potential signer
+	///
+	/// STEP 2: Subsequent Signers (2nd through k-1)
+	///   - Receive PartialSignatureData from previous signer
+	///   - System filters to ONLY combinations where THIS signer participates
+	///   - This naturally narrows down the possible signing paths
+	///   - Signer adds signatures to filtered combinations (both base and buffered)
+	///   - Passes updated PartialSignatureData to next signer
+	///
+	/// STEP 3: Final (kth) Signer
+	///   - By now, only ONE specific combination of k signers remains viable
+	///   - BUT there are TWO versions of this combination:
+	///     * Version A: transaction with base fee (exact vsize)
+	///     * Version B: transaction with buffered fee (vsize + buffer%)
+	///   - Final signer adds their signature to both versions
+	///   - Final signer CHOOSES which transaction to broadcast based on:
+	///     * Current network congestion
+	///     * Fee urgency
+	///     * Cost vs. speed preference
+	///   - Calls FinalizeTransaction(inputIndex, useBufferedSize: true/false)
+	///
+	/// KEY BENEFITS:
+	/// -------------
+	/// 1. Accurate fee estimation - based on actual signers, not guesses
+	/// 2. Flexible fee strategy - final signer controls cost vs. speed tradeoff
+	/// 3. No wasted signatures - all signatures contribute to path narrowing
+	/// 4. Protection against fee underpayment - buffer provides safety margin
+	///
+	/// USAGE EXAMPLE:
+	/// --------------
+	/// // Setup: 3-of-7 multisig, 15% buffer
+	/// var multiSig = new DelegatedMultiSig(ownerPubKey, signerPubKeys, 3, network);
+	/// var builder = multiSig.CreateSignatureBuilder(tx, coins);
+	///
+	/// // Signer 1 (creates initial signatures for all their combinations)
+	/// var sig1 = builder.SignWithSigner(key1, 0); // Signs all combos with signer 1
+	/// // Pass sig1.Serialize() to other signers
+	///
+	/// // Signer 2 (adds to combinations that include both signer 1 and 2)
+	/// var sig2 = builder.SignWithSigner(key2, 0); // Narrows down further
+	///
+	/// // Signer 3 (final signer - now only one combo remains)
+	/// var sig3 = builder.SignWithSigner(key3, 0);
+	///
+	/// // Final signer chooses: low fee (false) or high fee with buffer (true)
+	/// var finalTx = builder.FinalizeTransaction(0, useBufferedSize: false);
+	/// </summary>
 	public class DelegatedMultiSig
 	{
 		private readonly PubKey _ownerPubKey;
@@ -245,22 +320,609 @@ namespace NBitcoin
 			return new DelegatedMultiSigSignatureBuilder(this, transaction, spentCoins, isDynamicFeeMode);
 		}
 
+		/// <summary>
+		/// Creates dual transactions (base and buffered) for a specific signer combination.
+		/// This is used internally after the final signer combination is known.
+		/// For the progressive PSBT workflow, use CreatePSBTForFirstSigner instead.
+		/// </summary>
+		/// <param name="coin">The input coin to spend</param>
+		/// <param name="paymentAddress">The destination address for the payment</param>
+		/// <param name="paymentAmount">The amount to send to the payment address</param>
+		/// <param name="changeAddress">The address to receive change</param>
+		/// <param name="feeRate">The fee rate (satoshis per vbyte)</param>
+		/// <param name="signerIndices">The indices of the k signers who will participate</param>
+		/// <param name="bufferPercentage">Buffer percentage for the buffered transaction (e.g., 15.0 for 15%)</param>
+		/// <returns>A tuple containing (baseTransaction, bufferedTransaction)</returns>
+		public (Transaction baseTx, Transaction bufferedTx) CreateDualTransactions(
+			ICoin coin,
+			IDestination paymentAddress,
+			Money paymentAmount,
+			IDestination changeAddress,
+			FeeRate feeRate,
+			int[] signerIndices,
+			double bufferPercentage = 15.0)
+		{
+			if (coin == null)
+				throw new ArgumentNullException(nameof(coin));
+			if (paymentAddress == null)
+				throw new ArgumentNullException(nameof(paymentAddress));
+			if (changeAddress == null)
+				throw new ArgumentNullException(nameof(changeAddress));
+			if (feeRate == null)
+				throw new ArgumentNullException(nameof(feeRate));
+			if (signerIndices == null || signerIndices.Length < _requiredSignatures)
+				throw new ArgumentException($"Must provide at least {_requiredSignatures} signer indices");
+			if (bufferPercentage < 0 || bufferPercentage > 100)
+				throw new ArgumentOutOfRangeException(nameof(bufferPercentage), "Buffer percentage must be between 0 and 100");
+
+			// Find the cheapest script for the given signers
+			int cheapestScriptIndex = -1;
+			int smallestVSize = int.MaxValue;
+
+			for (int scriptIndex = 0; scriptIndex < _scripts.Count; scriptIndex++)
+			{
+				var script = _scripts[scriptIndex];
+				var scriptSignerIndices = _scriptToSignerIndices[script.LeafHash.ToString()];
+
+				// Check if this script matches the provided signers
+				if (scriptSignerIndices.Length == _requiredSignatures &&
+					scriptSignerIndices.All(idx => signerIndices.Contains(idx)))
+				{
+					// Create a temporary transaction to estimate size
+					var tempTx = _network.CreateTransaction();
+					tempTx.Inputs.Add(new OutPoint(coin.Outpoint.Hash, coin.Outpoint.N));
+					tempTx.Outputs.Add(paymentAmount, paymentAddress);
+					tempTx.Outputs.Add(Money.Zero, changeAddress); // Placeholder
+
+					var tempBuilder = CreateSignatureBuilder(tempTx, new[] { coin });
+					var estimate = tempBuilder.GetSizeEstimate(0);
+					var vsize = estimate.ScriptSpendVirtualSizes[scriptIndex];
+
+					if (vsize < smallestVSize)
+					{
+						smallestVSize = vsize;
+						cheapestScriptIndex = scriptIndex;
+					}
+				}
+			}
+
+			if (cheapestScriptIndex == -1)
+				throw new ArgumentException("No valid script found for the specified signers");
+
+			// Calculate fees
+			var baseFee = feeRate.GetFee(smallestVSize);
+			var bufferedVSize = (int)(smallestVSize * (1.0 + bufferPercentage / 100.0));
+			var bufferedFee = feeRate.GetFee(bufferedVSize);
+
+			// Calculate change amounts
+			var baseChange = (Money)coin.Amount - paymentAmount - baseFee;
+			var bufferedChange = (Money)coin.Amount - paymentAmount - bufferedFee;
+
+			if (baseChange < Money.Zero)
+				throw new InvalidOperationException("Insufficient funds for base transaction");
+			if (bufferedChange < Money.Zero)
+				throw new InvalidOperationException("Insufficient funds for buffered transaction");
+
+			// Create base transaction
+			var baseTx = _network.CreateTransaction();
+			baseTx.Inputs.Add(new OutPoint(coin.Outpoint.Hash, coin.Outpoint.N));
+			baseTx.Outputs.Add(paymentAmount, paymentAddress);
+			baseTx.Outputs.Add(baseChange, changeAddress);
+
+			// Create buffered transaction
+			var bufferedTx = _network.CreateTransaction();
+			bufferedTx.Inputs.Add(new OutPoint(coin.Outpoint.Hash, coin.Outpoint.N));
+			bufferedTx.Outputs.Add(paymentAmount, paymentAddress);
+			bufferedTx.Outputs.Add(bufferedChange, changeAddress);
+
+			return (baseTx, bufferedTx);
+		}
+
+		/// <summary>
+		/// Creates a MultiPathPSBT for the first signer in a progressive signing workflow.
+		/// Each script path gets its own transaction with the optimal fee for that specific combination.
+		/// </summary>
+		/// <param name="firstSignerKey">The first signer's private key</param>
+		/// <param name="coin">The input coin to spend</param>
+		/// <param name="paymentAddress">The destination address for the payment</param>
+		/// <param name="paymentAmount">The amount to send to the payment address</param>
+		/// <param name="changeAddress">The address to receive change</param>
+		/// <param name="feeRate">The fee rate (satoshis per vbyte)</param>
+		/// <param name="bufferPercentage">Buffer percentage for fee (e.g., 15.0 for 15%)</param>
+		/// <param name="inputIndex">Index of the input to sign (default: 0)</param>
+		/// <param name="sigHash">Taproot signature hash type (default: TaprootSigHash.All)</param>
+		/// <returns>A MultiPathPSBT containing separate transactions for each viable script path</returns>
+		public MultiPathPSBT CreateMultiPathPSBTForFirstSigner(
+			Key firstSignerKey,
+			ICoin coin,
+			IDestination paymentAddress,
+			Money paymentAmount,
+			IDestination changeAddress,
+			FeeRate feeRate,
+			double bufferPercentage = 15.0,
+			int inputIndex = 0,
+			TaprootSigHash sigHash = TaprootSigHash.All)
+		{
+			if (firstSignerKey == null)
+				throw new ArgumentNullException(nameof(firstSignerKey));
+			if (coin == null)
+				throw new ArgumentNullException(nameof(coin));
+			if (paymentAddress == null)
+				throw new ArgumentNullException(nameof(paymentAddress));
+			if (changeAddress == null)
+				throw new ArgumentNullException(nameof(changeAddress));
+			if (feeRate == null)
+				throw new ArgumentNullException(nameof(feeRate));
+			if (bufferPercentage < 0 || bufferPercentage > 100)
+				throw new ArgumentOutOfRangeException(nameof(bufferPercentage));
+
+			var signerPubKey = firstSignerKey.PubKey;
+			var signerIndex = _signerPubKeys.FindIndex(pk => pk == signerPubKey);
+			if (signerIndex == -1)
+				throw new ArgumentException("Signer key not found in the multisig configuration");
+
+			var pathPSBTs = new List<(int scriptIndex, int[] signerIndices, PSBT psbt, int virtualSize)>();
+
+			// Create a separate transaction for each script where this signer participates
+			for (int scriptIdx = 0; scriptIdx < _scripts.Count; scriptIdx++)
+			{
+				var script = _scripts[scriptIdx];
+				var scriptSignerIndices = _scriptToSignerIndices[script.LeafHash.ToString()];
+
+				if (!scriptSignerIndices.Contains(signerIndex))
+					continue;
+
+				// Calculate exact virtual size for this script path
+				var (baseTx, _) = CreateDualTransactions(coin, paymentAddress, paymentAmount,
+					changeAddress, feeRate, scriptSignerIndices, bufferPercentage);
+
+				// Create PSBT for this specific path
+				var psbt = CreatePSBT(baseTx, new[] { coin });
+
+				// Sign this specific path
+				SignPSBT(psbt, firstSignerKey, inputIndex, sigHash);
+
+				// Calculate actual virtual size
+				var builder = CreateSignatureBuilder(baseTx, new[] { coin });
+				var estimate = builder.GetSizeEstimate(inputIndex);
+				var vsize = estimate.ScriptSpendVirtualSizes[scriptIdx];
+
+				pathPSBTs.Add((scriptIdx, scriptSignerIndices, psbt, vsize));
+			}
+
+			if (pathPSBTs.Count == 0)
+				throw new InvalidOperationException("Signer does not participate in any script paths");
+
+			return new MultiPathPSBT(pathPSBTs, signerIndex);
+		}
+
+		/// <summary>
+		/// Creates a PSBT (Partially Signed Bitcoin Transaction) from an unsigned transaction.
+		/// Sets up Taproot-specific fields including the internal key and merkle root.
+		/// </summary>
+		/// <param name="transaction">The unsigned transaction to convert to a PSBT</param>
+		/// <param name="spentCoins">Array of coins being spent (must match transaction inputs)</param>
+		/// <returns>A PSBT ready for signing by participants</returns>
+		/// <remarks>
+		/// The created PSBT includes:
+		/// - WitnessUtxo for each input (required for Taproot)
+		/// - TaprootInternalKey (owner's public key)
+		/// - TaprootMerkleRoot (root of the script tree)
+		/// </remarks>
 		public PSBT CreatePSBT(Transaction transaction, ICoin[] spentCoins)
 		{
 			var psbt = PSBT.FromTransaction(transaction, _network);
-			
+
 			for (int i = 0; i < spentCoins.Length && i < psbt.Inputs.Count; i++)
 			{
 				var input = psbt.Inputs[i];
 				input.WitnessUtxo = spentCoins[i].TxOut;
-				
+
 				input.TaprootInternalKey = _ownerPubKey.TaprootInternalKey;
 				input.TaprootMerkleRoot = _taprootSpendInfo.MerkleRoot;
 			}
-			
+
 			return psbt;
 		}
 
+		/// <summary>
+		/// Signs a PSBT with a signer's key, adding partial signatures for all scripts the signer participates in.
+		/// Uses BIP 174 proprietary fields to store DelegatedMultiSig partial signatures.
+		/// </summary>
+		/// <param name="psbt">The PSBT to sign (modified in-place)</param>
+		/// <param name="signerKey">The private key of the signer</param>
+		/// <param name="inputIndex">Index of the input to sign (default: 0)</param>
+		/// <param name="sigHash">Taproot signature hash type (default: TaprootSigHash.Default)</param>
+		/// <returns>The modified PSBT with signatures added</returns>
+		/// <exception cref="ArgumentException">Thrown when signer key is not found in the multisig configuration</exception>
+		/// <remarks>
+		/// <para>This method implements BIP 174 compliant PSBT signing using proprietary fields.</para>
+		/// <para>Proprietary key format:</para>
+		/// <code>
+		/// 0xFC                           // Proprietary type byte
+		/// &lt;compact_size:identifier_len&gt;  // Length of identifier (5)
+		/// "DMSIG"                        // Identifier (5 ASCII bytes)
+		/// &lt;compact_size:scriptIndex&gt;     // Which script combination was used
+		/// &lt;byte:signerIndex&gt;             // Which signer created this signature
+		/// </code>
+		/// <para>The PSBT can be serialized with ToBase64() and transmitted to other signers.</para>
+		/// <para>Each signer can call SignPSBT on the deserialized PSBT to add their signatures.</para>
+		/// </remarks>
+		/// <example>
+		/// <code>
+		/// // First signer signs
+		/// multiSig.SignPSBT(psbt, signerKeys[0], 0, TaprootSigHash.All);
+		/// var serialized = psbt.ToBase64();
+		///
+		/// // Second signer receives and signs
+		/// var psbt2 = PSBT.Parse(serialized, Network.RegTest);
+		/// multiSig.SignPSBT(psbt2, signerKeys[2], 0, TaprootSigHash.All);
+		/// </code>
+		/// </example>
+		public PSBT SignPSBT(PSBT psbt, Key signerKey, int inputIndex = 0, TaprootSigHash sigHash = TaprootSigHash.Default)
+	{
+		var signerPubKey = signerKey.PubKey;
+		var signerIndex = _signerPubKeys.FindIndex(pk => pk == signerPubKey);
+		if (signerIndex == -1)
+			throw new ArgumentException("Signer key not found in the multisig configuration");
+
+		var transaction = psbt.GetGlobalTransaction();
+		var spentCoins = new List<ICoin>();
+		foreach (var input in psbt.Inputs)
+		{
+			if (input.WitnessUtxo != null)
+				spentCoins.Add(new Coin(input.PrevOut, input.WitnessUtxo));
+		}
+
+		var builder = CreateSignatureBuilder(transaction, spentCoins.ToArray());
+		builder.SignWithSigner(signerKey, inputIndex, sigHash);
+
+		// Store partial signatures using BIP 174 proprietary fields
+		// Format: 0xFC + <compact_size:id_len> + identifier + <compact_size:subtype> + key_data
+		var partialSigs = builder._partialSignatures[inputIndex];
+		var inputPSBT = psbt.Inputs[inputIndex];
+
+		foreach (var sig in partialSigs)
+		{
+			// Proprietary key components
+			var identifier = System.Text.Encoding.ASCII.GetBytes("DMSIG"); // 5 bytes
+			var subtype = (ulong)sig.ScriptIndex;
+			var keyData = new byte[] { (byte)sig.SignerIndex };
+
+			// Build BIP 174 compliant proprietary key
+			var keyBytes = new List<byte>();
+			keyBytes.Add(0xFC); // Type byte
+
+			// Identifier length + identifier
+			keyBytes.AddRange(GetCompactSizeBytes((ulong)identifier.Length));
+			keyBytes.AddRange(identifier);
+
+			// Subtype
+			keyBytes.AddRange(GetCompactSizeBytes(subtype));
+
+			// Key data
+			keyBytes.AddRange(keyData);
+
+			// Value: Taproot signature bytes
+			var valueBytes = sig.Signature.ToBytes();
+
+			inputPSBT.Unknown[keyBytes.ToArray()] = valueBytes;
+		}
+
+		return psbt;
+	}
+
+		/// <summary>
+		/// Checks if a PSBT has enough signatures to be finalized.
+		/// </summary>
+		/// <param name="psbt">The PSBT to check</param>
+		/// <param name="inputIndex">Index of the input to check (default: 0)</param>
+		/// <returns>True if the PSBT has k or more signatures and can be finalized</returns>
+		/// <remarks>
+		/// This method counts unique signers in the PSBT proprietary fields.
+		/// A PSBT is complete when it has at least k signatures from different signers.
+		/// </remarks>
+		private bool IsComplete(PSBT psbt, int inputIndex = 0)
+		{
+			var inputPSBT = psbt.Inputs[inputIndex];
+			var uniqueSigners = new HashSet<byte>();
+
+			foreach (var kvp in inputPSBT.Unknown)
+			{
+				var key = kvp.Key;
+				if (key.Length < 2 || key[0] != 0xFC)
+					continue;
+
+				try
+				{
+					int offset = 1;
+					var idLen = ReadCompactSizeFromBytes(key, ref offset);
+					if (offset + (int)idLen > key.Length)
+						continue;
+
+					var identifier = new byte[idLen];
+					Array.Copy(key, offset, identifier, 0, (int)idLen);
+					offset += (int)idLen;
+
+					var identifierStr = System.Text.Encoding.ASCII.GetString(identifier);
+					if (identifierStr != "DMSIG")
+						continue;
+
+					// Read scriptIndex (we don't need it for counting)
+					ReadCompactSizeFromBytes(key, ref offset);
+
+					// Read signerIndex
+					if (offset >= key.Length)
+						continue;
+					var signerIndex = key[offset];
+
+					uniqueSigners.Add(signerIndex);
+				}
+				catch
+				{
+					continue;
+				}
+			}
+
+			return uniqueSigners.Count >= _requiredSignatures;
+		}
+
+		/// <summary>
+		/// Attempts to finalize a PSBT if it has enough signatures.
+		/// Returns the finalized transaction if successful, or null if more signatures are needed.
+		/// </summary>
+		/// <param name="psbt">The PSBT to finalize</param>
+		/// <param name="inputIndex">Index of the input to finalize (default: 0)</param>
+		/// <param name="useBufferedSize">Whether to use buffered size estimation (default: false)</param>
+		/// <returns>Finalized transaction if complete, null otherwise</returns>
+		/// <remarks>
+		/// <para>This method provides a convenient way to check and finalize in one call.</para>
+		/// <para>Typical workflow:</para>
+		/// <code>
+		/// multiSig.SignPSBT(psbt, myKey);
+		/// var tx = multiSig.TryFinalizePSBT(psbt);
+		/// if (tx != null)
+		///     rpc.SendRawTransaction(tx);  // Ready to broadcast
+		/// else
+		///     SendToNextSigner(psbt.ToBase64());  // Need more signatures
+		/// </code>
+		/// </remarks>
+		public Transaction TryFinalizePSBT(PSBT psbt, int inputIndex = 0, bool useBufferedSize = false)
+		{
+			if (!IsComplete(psbt, inputIndex))
+				return null;
+
+			return FinalizePSBT(psbt, inputIndex, useBufferedSize);
+		}
+
+		/// <summary>
+		/// Finalizes a PSBT by extracting partial signatures and creating the final witness.
+		/// Returns a fully signed transaction ready for broadcast.
+		/// </summary>
+		/// <param name="psbt">The PSBT containing all required signatures</param>
+		/// <param name="inputIndex">Index of the input to finalize (default: 0)</param>
+		/// <param name="useBufferedSize">Whether to use buffered size estimation (default: false)</param>
+		/// <returns>Fully signed transaction ready for broadcast</returns>
+		/// <exception cref="InvalidOperationException">Thrown when insufficient signatures are present</exception>
+		/// <remarks>
+		/// <para>This method:</para>
+		/// <list type="number">
+		/// <item><description>Extracts all partial signatures from PSBT proprietary fields</description></item>
+		/// <item><description>Reconstructs the witness script with collected signatures</description></item>
+		/// <item><description>Validates that the k-of-n threshold is met</description></item>
+		/// <item><description>Returns a fully signed transaction</description></item>
+		/// </list>
+		/// <para>The proprietary fields follow BIP 174 format with "DMSIG" identifier.</para>
+		/// <para>Each signature includes scriptIndex and signerIndex for proper reconstruction.</para>
+		/// </remarks>
+		/// <example>
+		/// <code>
+		/// // After all k signers have signed the PSBT
+		/// var finalTx = multiSig.FinalizePSBT(psbt, 0);
+		///
+		/// // Broadcast the transaction
+		/// var txid = rpc.SendRawTransaction(finalTx);
+		/// </code>
+		/// </example>
+		public Transaction FinalizePSBT(PSBT psbt, int inputIndex = 0, bool useBufferedSize = false)
+	{
+		var transaction = psbt.GetGlobalTransaction();
+		var spentCoins = new List<ICoin>();
+		foreach (var input in psbt.Inputs)
+		{
+			if (input.WitnessUtxo != null)
+				spentCoins.Add(new Coin(input.PrevOut, input.WitnessUtxo));
+		}
+
+		var builder = CreateSignatureBuilder(transaction, spentCoins.ToArray());
+
+		// Extract partial signatures from PSBT proprietary fields
+		var inputPSBT = psbt.Inputs[inputIndex];
+		var partialSignatures = new List<PartialSignature>();
+
+		foreach (var kvp in inputPSBT.Unknown)
+		{
+			var key = kvp.Key;
+			if (key.Length < 2 || key[0] != 0xFC)
+				continue;
+
+			try
+			{
+				int offset = 1;
+
+				// Read identifier length
+				var idLen = ReadCompactSizeFromBytes(key, ref offset);
+				if (offset + (int)idLen > key.Length)
+					continue;
+
+				// Read identifier
+				var identifier = new byte[idLen];
+				Array.Copy(key, offset, identifier, 0, (int)idLen);
+				offset += (int)idLen;
+
+				// Check if this is our identifier
+				var identifierStr = System.Text.Encoding.ASCII.GetString(identifier);
+				if (identifierStr != "DMSIG")
+					continue;
+
+				// Read subtype (scriptIndex)
+				var scriptIndex = (int)ReadCompactSizeFromBytes(key, ref offset);
+
+				// Read key data (signerIndex)
+				if (offset >= key.Length)
+					continue;
+				var signerIndex = key[offset];
+
+				// Parse signature from value
+				if (!TaprootSignature.TryParse(kvp.Value, out var signature))
+					continue;
+
+				// Reconstruct the PartialSignature
+				partialSignatures.Add(new PartialSignature
+				{
+					SignerIndex = signerIndex,
+					Signature = signature,
+					ScriptIndex = scriptIndex,
+					EstimatedVirtualSize = 0,
+					EstimatedVirtualSizeWithBuffer = 0
+				});
+			}
+			catch
+			{
+				// Skip malformed proprietary keys
+				continue;
+			}
+		}
+
+		// Add all partial signatures to the builder
+		if (!builder._partialSignatures.ContainsKey(inputIndex))
+			builder._partialSignatures[inputIndex] = new List<PartialSignature>();
+		builder._partialSignatures[inputIndex].AddRange(partialSignatures);
+
+		// Finalize the transaction
+		return builder.FinalizeTransaction(inputIndex, useBufferedSize);
+	}
+
+		/// <summary>
+		/// Gets the size in bytes of a varint encoding for the given length.
+		/// </summary>
+		private static int GetVarIntSize(int length)
+		{
+			if (length < 0xFD) return 1;
+			if (length <= 0xFFFF) return 3;
+			if (length <= int.MaxValue) return 5;
+			return 9;
+		}
+
+		/// <summary>
+		/// Encodes a value as compact size bytes per Bitcoin protocol.
+		/// Used for BIP 174 PSBT proprietary field encoding.
+		/// </summary>
+		/// <param name="value">The value to encode</param>
+		/// <returns>Byte array containing the compact size encoded value</returns>
+		/// <remarks>
+		/// <para>Compact size encoding rules:</para>
+		/// <list type="bullet">
+		/// <item><description>Values &lt; 0xFD: 1 byte (the value itself)</description></item>
+		/// <item><description>Values ≤ 0xFFFF: 3 bytes (0xFD + 2-byte little-endian)</description></item>
+		/// <item><description>Values ≤ 0xFFFFFFFF: 5 bytes (0xFE + 4-byte little-endian)</description></item>
+		/// <item><description>Values &gt; 0xFFFFFFFF: 9 bytes (0xFF + 8-byte little-endian)</description></item>
+		/// </list>
+		/// </remarks>
+		private static byte[] GetCompactSizeBytes(ulong value)
+	{
+		if (value < 0xFD)
+		{
+			return new byte[] { (byte)value };
+		}
+		else if (value <= 0xFFFF)
+		{
+			var bytes = new byte[3];
+			bytes[0] = 0xFD;
+			bytes[1] = (byte)(value & 0xFF);
+			bytes[2] = (byte)((value >> 8) & 0xFF);
+			return bytes;
+		}
+		else if (value <= 0xFFFFFFFF)
+		{
+			var bytes = new byte[5];
+			bytes[0] = 0xFE;
+			bytes[1] = (byte)(value & 0xFF);
+			bytes[2] = (byte)((value >> 8) & 0xFF);
+			bytes[3] = (byte)((value >> 16) & 0xFF);
+			bytes[4] = (byte)((value >> 24) & 0xFF);
+			return bytes;
+		}
+		else
+		{
+			var bytes = new byte[9];
+			bytes[0] = 0xFF;
+			for (int i = 0; i < 8; i++)
+			{
+				bytes[i + 1] = (byte)((value >> (i * 8)) & 0xFF);
+			}
+			return bytes;
+		}
+	}
+
+		/// <summary>
+		/// Reads a compact size value from a byte array at the given offset.
+		/// Used for parsing BIP 174 PSBT proprietary fields.
+		/// </summary>
+		/// <param name="data">Byte array containing the compact size value</param>
+		/// <param name="offset">Current offset in the array (updated after reading)</param>
+		/// <returns>The decoded value</returns>
+		/// <exception cref="ArgumentException">Thrown when offset is out of range or encoding is invalid</exception>
+		/// <remarks>
+		/// <para>This method reads compact size values according to Bitcoin protocol:</para>
+		/// <list type="bullet">
+		/// <item><description>First byte &lt; 0xFD: Return the byte value, advance offset by 1</description></item>
+		/// <item><description>First byte == 0xFD: Read 2-byte little-endian value, advance offset by 3</description></item>
+		/// <item><description>First byte == 0xFE: Read 4-byte little-endian value, advance offset by 5</description></item>
+		/// <item><description>First byte == 0xFF: Read 8-byte little-endian value, advance offset by 9</description></item>
+		/// </list>
+		/// <para>The offset parameter is passed by reference and updated to point past the decoded value.</para>
+		/// </remarks>
+		private static ulong ReadCompactSizeFromBytes(byte[] data, ref int offset)
+	{
+		if (offset >= data.Length)
+			throw new ArgumentException("Offset out of range");
+
+		byte firstByte = data[offset++];
+		if (firstByte < 0xFD)
+		{
+			return firstByte;
+		}
+		else if (firstByte == 0xFD)
+		{
+			if (offset + 2 > data.Length)
+				throw new ArgumentException("Invalid compact size encoding");
+			var value = (ulong)data[offset] | ((ulong)data[offset + 1] << 8);
+			offset += 2;
+			return value;
+		}
+		else if (firstByte == 0xFE)
+		{
+			if (offset + 4 > data.Length)
+				throw new ArgumentException("Invalid compact size encoding");
+			var value = (ulong)data[offset] | ((ulong)data[offset + 1] << 8) |
+						((ulong)data[offset + 2] << 16) | ((ulong)data[offset + 3] << 24);
+			offset += 4;
+			return value;
+		}
+		else // 0xFF
+		{
+			if (offset + 8 > data.Length)
+				throw new ArgumentException("Invalid compact size encoding");
+			var value = 0UL;
+			for (int i = 0; i < 8; i++)
+			{
+				value |= ((ulong)data[offset + i] << (i * 8));
+			}
+			offset += 8;
+			return value;
+		}
+	}
 		public class TransactionSizeEstimate
 		{
 			public int KeySpendSize { get; set; }
@@ -962,6 +1624,140 @@ namespace NBitcoin
 				}
 
 				return result;
+			}
+		}
+
+		/// <summary>
+		/// Represents multiple transaction paths in a progressive PSBT signing workflow.
+		/// Each path corresponds to a different signer combination, with optimal fees.
+		/// </summary>
+		public class MultiPathPSBT
+		{
+			private readonly List<(int scriptIndex, int[] signerIndices, PSBT psbt, int virtualSize)> _paths;
+			private readonly HashSet<int> _currentSigners;
+
+			public MultiPathPSBT(List<(int scriptIndex, int[] signerIndices, PSBT psbt, int virtualSize)> paths, int firstSignerIndex)
+			{
+				_paths = paths;
+				_currentSigners = new HashSet<int> { firstSignerIndex };
+			}
+
+			private MultiPathPSBT(List<(int scriptIndex, int[] signerIndices, PSBT psbt, int virtualSize)> paths, HashSet<int> currentSigners)
+			{
+				_paths = paths;
+				_currentSigners = currentSigners;
+			}
+
+			public int PathCount => _paths.Count;
+
+			public IReadOnlyList<(int scriptIndex, int[] signerIndices, int virtualSize)> GetViablePaths()
+			{
+				return _paths
+					.Where(p => p.signerIndices.All(idx => _currentSigners.Contains(idx)) ||
+					            p.signerIndices.Any(idx => !_currentSigners.Contains(idx)))
+					.Select(p => (p.scriptIndex, p.signerIndices, p.virtualSize))
+					.ToList();
+			}
+
+			/// <summary>
+			/// Adds a signer's signatures to all paths where they participate.
+			/// Returns a new MultiPathPSBT with filtered paths.
+			/// </summary>
+			public MultiPathPSBT AddSigner(DelegatedMultiSig multiSig, Key signerKey, int inputIndex = 0, TaprootSigHash sigHash = TaprootSigHash.All)
+			{
+				var signerPubKey = signerKey.PubKey;
+				var signerIndex = multiSig._signerPubKeys.FindIndex(pk => pk == signerPubKey);
+				if (signerIndex == -1)
+					throw new ArgumentException("Signer key not found in the multisig configuration");
+
+				// Filter to paths that include this signer
+				var viablePaths = _paths
+					.Where(p => p.signerIndices.Contains(signerIndex))
+					.ToList();
+
+				if (viablePaths.Count == 0)
+					throw new ArgumentException($"Signer {signerIndex} does not participate in any remaining paths");
+
+				// Sign all viable paths
+				foreach (var path in viablePaths)
+				{
+					multiSig.SignPSBT(path.psbt, signerKey, inputIndex, sigHash);
+				}
+
+				// Update current signers
+				var newSigners = new HashSet<int>(_currentSigners) { signerIndex };
+
+				return new MultiPathPSBT(viablePaths, newSigners);
+			}
+
+			/// <summary>
+			/// Tries to finalize if we have enough signatures.
+			/// Returns the cheapest complete transaction, or null if more signatures needed.
+			/// </summary>
+			public Transaction TryFinalize(DelegatedMultiSig multiSig, int inputIndex = 0)
+			{
+				// Find all paths that have k signatures
+				var completePaths = _paths
+					.Select(p => new
+					{
+						Path = p,
+						Finalized = multiSig.TryFinalizePSBT(p.psbt, inputIndex)
+					})
+					.Where(x => x.Finalized != null)
+					.ToList();
+
+				if (completePaths.Count == 0)
+					return null;
+
+				// Return the cheapest (smallest virtual size)
+				var cheapest = completePaths.OrderBy(x => x.Path.virtualSize).First();
+				return cheapest.Finalized;
+			}
+
+			/// <summary>
+			/// Serializes to a compact format for transmission between signers.
+			/// </summary>
+			public string Serialize()
+			{
+				var data = new
+				{
+					Paths = _paths.Select(p => new
+					{
+						ScriptIndex = p.scriptIndex,
+						SignerIndices = p.signerIndices,
+						PSBT = p.psbt.ToBase64(),
+						VirtualSize = p.virtualSize
+					}).ToArray(),
+					CurrentSigners = _currentSigners.ToArray()
+				};
+
+				var json = Newtonsoft.Json.JsonConvert.SerializeObject(data);
+				return Encoders.Base64.EncodeData(System.Text.Encoding.UTF8.GetBytes(json));
+			}
+
+			/// <summary>
+			/// Deserializes from the compact format.
+			/// </summary>
+			public static MultiPathPSBT Deserialize(string serialized, Network network)
+			{
+				var jsonBytes = Encoders.Base64.DecodeData(serialized);
+				var json = System.Text.Encoding.UTF8.GetString(jsonBytes);
+				var jsonObject = Newtonsoft.Json.Linq.JObject.Parse(json);
+
+				var paths = new List<(int scriptIndex, int[] signerIndices, PSBT psbt, int virtualSize)>();
+				foreach (var pathJson in jsonObject["Paths"])
+				{
+					var scriptIndex = pathJson["ScriptIndex"].ToObject<int>();
+					var signerIndices = pathJson["SignerIndices"].ToObject<int[]>();
+					var psbt = PSBT.Parse(pathJson["PSBT"].ToString(), network);
+					var virtualSize = pathJson["VirtualSize"].ToObject<int>();
+
+					paths.Add((scriptIndex, signerIndices, psbt, virtualSize));
+				}
+
+				var currentSigners = new HashSet<int>(jsonObject["CurrentSigners"].ToObject<int[]>());
+
+				return new MultiPathPSBT(paths, currentSigners);
 			}
 		}
 	}

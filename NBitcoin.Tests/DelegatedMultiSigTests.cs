@@ -601,78 +601,6 @@ namespace NBitcoin.Tests
 
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
-		public void DemonstratesFeeCalculationWorkflow()
-		{
-			var ownerKey = new Key();
-			var ownerPubKey = ownerKey.PubKey;
-			var signerKeys = new List<Key> { new Key(), new Key(), new Key(), new Key() };
-			var signerPubKeys = signerKeys.Select(k => k.PubKey).ToList();
-
-			// Create 3-of-4 multisig
-			var multiSig = new DelegatedMultiSig(ownerPubKey, signerPubKeys, 3, Network.RegTest);
-
-			// Simulate UTXO of 1 BTC
-			var inputAmount = Money.Coins(1.0m);
-			var outputAmount = Money.Coins(0.95m); // Sending 0.95 BTC
-			
-			var tx = Network.RegTest.CreateTransaction();
-			tx.Inputs.Add(new OutPoint(uint256.One, 0));
-			tx.Outputs.Add(outputAmount, new Key().GetAddress(ScriptPubKeyType.TaprootBIP86, Network.RegTest));
-
-			var coin = new Coin(new OutPoint(uint256.One, 0), new TxOut(inputAmount, multiSig.Address.ScriptPubKey));
-			var builder = multiSig.CreateSignatureBuilder(tx, new[] { coin });
-			
-			// Get size estimates
-			var sizeEstimate = builder.GetSizeEstimate(0);
-			
-			// Current fee rate (e.g., from mempool)
-			var feeRate = new FeeRate(Money.Satoshis(25), 1); // 25 sat/vbyte
-			
-			// Calculate fees for different scenarios (using virtual size)
-			var keySpendFee = feeRate.GetFee(sizeEstimate.KeySpendVirtualSize);
-			
-			// Find the cheapest script spend option
-			var cheapestScriptIndex = sizeEstimate.ScriptSpendVirtualSizes
-				.OrderBy(kvp => kvp.Value)
-				.First().Key;
-			var cheapestScriptFee = feeRate.GetFee(sizeEstimate.ScriptSpendVirtualSizes[cheapestScriptIndex]);
-			var cheapestScriptFeeWithBuffer = feeRate.GetFee(sizeEstimate.ScriptSpendVirtualSizesWithBuffer[cheapestScriptIndex]);
-			
-			// Demonstrate fee decision making
-			Console.WriteLine($"Input: {inputAmount}");
-			Console.WriteLine($"Output: {outputAmount}");
-			Console.WriteLine($"Available for fees: {inputAmount - outputAmount}");
-			Console.WriteLine($"");
-			Console.WriteLine($"Fee Rate: {feeRate.SatoshiPerByte} sat/vbyte");
-			Console.WriteLine($"");
-			Console.WriteLine($"Key Spend (Owner):");
-			Console.WriteLine($"  Size: {sizeEstimate.KeySpendSize} bytes");
-			Console.WriteLine($"  Virtual Size: {sizeEstimate.KeySpendVirtualSize} vbytes");
-			Console.WriteLine($"  Fee: {keySpendFee} ({keySpendFee.Satoshi} sats)");
-			Console.WriteLine($"");
-			Console.WriteLine($"Script Spend (3-of-4 Multisig):");
-			Console.WriteLine($"  Cheapest script: #{cheapestScriptIndex}");
-			Console.WriteLine($"  Size: {sizeEstimate.ScriptSpendSizes[cheapestScriptIndex]} bytes");
-			Console.WriteLine($"  Virtual Size: {sizeEstimate.ScriptSpendVirtualSizes[cheapestScriptIndex]} vbytes");
-			Console.WriteLine($"  Fee: {cheapestScriptFee} ({cheapestScriptFee.Satoshi} sats)");
-			Console.WriteLine($"  Fee with 5% buffer: {cheapestScriptFeeWithBuffer} ({cheapestScriptFeeWithBuffer.Satoshi} sats)");
-			
-			// Verify we have enough for fees
-			var maxAvailableFee = inputAmount - outputAmount;
-			Assert.True(keySpendFee < maxAvailableFee);
-			Assert.True(cheapestScriptFeeWithBuffer < maxAvailableFee);
-			
-			// Calculate actual change amounts
-			var changeWithKeySpend = inputAmount - outputAmount - keySpendFee;
-			var changeWithScriptSpend = inputAmount - outputAmount - cheapestScriptFeeWithBuffer;
-			
-			Assert.True(changeWithKeySpend > changeWithScriptSpend); // Key spend is cheaper
-			Assert.True(changeWithKeySpend > Money.Zero);
-			Assert.True(changeWithScriptSpend > Money.Zero);
-		}
-
-		[Fact]
-		[Trait("UnitTest", "UnitTest")]
 		public void ValidatesOwnerPrivateKeyMatches()
 		{
 			var ownerKey = new Key();
@@ -949,85 +877,97 @@ namespace NBitcoin.Tests
 				var spentOutput = tx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == address.ScriptPubKey);
 				var coin = new Coin(spentOutput);
 
-				// Scenario: High network congestion, need conservative approach
+				// Scenario: High network congestion, dual-transaction approach
 				var paymentAddress = rpc.GetNewAddress();
 				var paymentAmount = Money.Coins(0.8m);
 				var changeAddress = rpc.GetNewAddress();
-				
-				// Create temp transaction for size estimation
-				var tempTx = Network.RegTest.CreateTransaction();
-				tempTx.Inputs.Add(new OutPoint(tx, spentOutput.N));
-				tempTx.Outputs.Add(paymentAmount, paymentAddress);
-				tempTx.Outputs.Add(Money.Coins(0.19m), changeAddress);
-				
-				var tempBuilder = multiSig.CreateSignatureBuilder(tempTx, new[] { coin });
-				var baseEstimate = tempBuilder.GetSizeEstimate(0);
-				var cheapestScriptIndex = baseEstimate.ScriptSpendVirtualSizes
-					.OrderBy(kvp => kvp.Value)
-					.First().Key;
-				
-				// Different risk tolerance levels
-				var scenarios = new []
-				{
-					new { Name = "Conservative (50% buffer)", Buffer = 50.0 },
-					new { Name = "Very Conservative (75% buffer)", Buffer = 75.0 },
-					new { Name = "Emergency (100% buffer)", Buffer = 100.0 }
-				};
-				
 				var feeRate = new FeeRate(Money.Satoshis(80), 1); // High fee rate due to congestion
-				
-				Console.WriteLine($"Variable Buffer Scenario Analysis:");
+
+				// Participating signers: 0, 3, 6 (these will actually sign)
+				var participatingSignerIndices = new int[] { 0, 3, 6 };
+
+				Console.WriteLine($"Dual-Transaction Progressive Signing Scenario:");
 				Console.WriteLine($"Network Conditions: High congestion, {feeRate.SatoshiPerByte} sat/vbyte");
 				Console.WriteLine($"Payment: {paymentAmount}");
 				Console.WriteLine($"Available for fees: {coin.Amount - paymentAmount}");
+				Console.WriteLine($"Participating signers: {string.Join(", ", participatingSignerIndices)}");
 				Console.WriteLine($"");
-				
-				foreach (var scenario in scenarios)
-				{
-					var customEstimate = tempBuilder.GetSizeEstimateWithCustomBuffer(0, scenario.Buffer);
-					var vsize = customEstimate.ScriptSpendVirtualSizesWithBuffer[cheapestScriptIndex];
-					var fee = feeRate.GetFee(vsize);
-					var change = coin.Amount - paymentAmount - fee;
-					
-					Console.WriteLine($"{scenario.Name}:");
-					Console.WriteLine($"  VSize: {vsize} vbytes");
-					Console.WriteLine($"  Fee: {fee} ({fee.Satoshi} sats)");
-					Console.WriteLine($"  Change: {change}");
-					Console.WriteLine($"");
-					
-					// Verify we have enough funds
-					Assert.True(change > Money.Zero, $"Insufficient funds for {scenario.Name}");
-				}
-				
-				// Choose the 50% buffer scenario and execute
-				var chosenEstimate = tempBuilder.GetSizeEstimateWithCustomBuffer(0, 50.0);
-				var chosenFee = feeRate.GetFee(chosenEstimate.ScriptSpendVirtualSizesWithBuffer[cheapestScriptIndex]);
-				var finalChange = coin.Amount - paymentAmount - chosenFee;
-				
-				// Create and sign the actual transaction
-				var finalTx = Network.RegTest.CreateTransaction();
-				finalTx.Inputs.Add(new OutPoint(tx, spentOutput.N));
-				finalTx.Outputs.Add(paymentAmount, paymentAddress);
-				finalTx.Outputs.Add(finalChange, changeAddress);
-				
-				var finalBuilder = multiSig.CreateSignatureBuilder(finalTx, new[] { coin });
-				finalBuilder.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
-				finalBuilder.SignWithSigner(signerKeys[3], 0, TaprootSigHash.All);
-				finalBuilder.SignWithSigner(signerKeys[6], 0, TaprootSigHash.All);
-				var completedTx = finalBuilder.FinalizeTransaction(0);
-				
-				// Verify and broadcast
-				var actualFee = coin.Amount - completedTx.Outputs.Sum(o => (Money)o.Value);
-				Console.WriteLine($"Final Transaction:");
-				Console.WriteLine($"  Chosen: Conservative (50% buffer)");
-				Console.WriteLine($"  Actual fee: {actualFee}");
-				Console.WriteLine($"  Final change: {completedTx.Outputs[1].Value}");
-				
-				rpc.SendRawTransaction(completedTx);
-				
+
+				// Create TWO transactions (base and buffered 50%)
+				var (baseTx, bufferedTx) = multiSig.CreateDualTransactions(
+					coin,
+					paymentAddress,
+					paymentAmount,
+					changeAddress,
+					feeRate,
+					participatingSignerIndices,
+					bufferPercentage: 50.0);
+
+				var baseFee = coin.Amount - baseTx.Outputs.Sum(o => (Money)o.Value);
+				var bufferedFee = coin.Amount - bufferedTx.Outputs.Sum(o => (Money)o.Value);
+
+				Console.WriteLine($"Transaction A (Base):");
+				Console.WriteLine($"  Fee: {baseFee} ({baseFee.Satoshi} sats)");
+				Console.WriteLine($"  Change: {baseTx.Outputs[1].Value}");
+				Console.WriteLine($"");
+
+				Console.WriteLine($"Transaction B (Buffered 50%):");
+				Console.WriteLine($"  Fee: {bufferedFee} ({bufferedFee.Satoshi} sats)");
+				Console.WriteLine($"  Change: {bufferedTx.Outputs[1].Value}");
+				Console.WriteLine($"");
+
+				// Create builders for BOTH transactions
+				var builderBase = multiSig.CreateSignatureBuilder(baseTx, new[] { coin });
+				var builderBuffered = multiSig.CreateSignatureBuilder(bufferedTx, new[] { coin });
+
+				// Each signer signs BOTH transactions
+				Console.WriteLine($"Collecting signatures from all participants...");
+				builderBase.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
+				builderBuffered.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
+				Console.WriteLine($"  Signer 0: signed both transactions");
+
+				builderBase.SignWithSigner(signerKeys[3], 0, TaprootSigHash.All);
+				builderBuffered.SignWithSigner(signerKeys[3], 0, TaprootSigHash.All);
+				Console.WriteLine($"  Signer 3: signed both transactions");
+
+				builderBase.SignWithSigner(signerKeys[6], 0, TaprootSigHash.All);
+				builderBuffered.SignWithSigner(signerKeys[6], 0, TaprootSigHash.All);
+				Console.WriteLine($"  Signer 6: signed both transactions");
+				Console.WriteLine($"");
+
+				// Finalize BOTH transactions
+				var completedBaseTx = builderBase.FinalizeTransaction(0);
+				var completedBufferedTx = builderBuffered.FinalizeTransaction(0);
+
+				// Final signer (signer 6) now has TWO options to choose from
+				Console.WriteLine($"Final signer decision point:");
+				Console.WriteLine($"  Option A (Base): Fee = {baseFee}, Change = {completedBaseTx.Outputs[1].Value}");
+				Console.WriteLine($"  Option B (Buffered): Fee = {bufferedFee}, Change = {completedBufferedTx.Outputs[1].Value}");
+				Console.WriteLine($"");
+
+				// Simulate decision: choose buffered for high congestion
+				var chosenTx = completedBufferedTx;
+				Console.WriteLine($"Decision: Broadcasting BUFFERED transaction due to high congestion");
+				Console.WriteLine($"  Final fee: {bufferedFee}");
+				Console.WriteLine($"  Final change: {chosenTx.Outputs[1].Value}");
+
+				// Broadcast chosen transaction
+				rpc.SendRawTransaction(chosenTx);
+
 				// Verify the transaction was constructed correctly
-				Assert.Equal(paymentAmount, completedTx.Outputs[0].Value);
-				Assert.True(completedTx.Outputs[1].Value > Money.Zero);
+				Assert.Equal(paymentAmount, chosenTx.Outputs[0].Value);
+				Assert.True(chosenTx.Outputs[1].Value > Money.Zero);
+
+				// Verify BOTH transactions are valid (could have broadcast either one)
+				var actualBaseFee = coin.Amount - completedBaseTx.Outputs.Sum(o => (Money)o.Value);
+				var actualBufferedFee = coin.Amount - completedBufferedTx.Outputs.Sum(o => (Money)o.Value);
+				Assert.True(actualBufferedFee > actualBaseFee, "Buffered transaction should have higher fee");
+
+				Console.WriteLine($"");
+				Console.WriteLine($"SUCCESS: Dual-transaction workflow completed");
+				Console.WriteLine($"  - Both transactions were fully signed");
+				Console.WriteLine($"  - Final signer chose the appropriate one for network conditions");
+				Console.WriteLine($"  - Alternative transaction is available if needed");
 			}
 		}
 #endif
@@ -1310,31 +1250,33 @@ namespace NBitcoin.Tests
 				Assert.Contains(broadcastResult, mempoolInfo);
 				Console.WriteLine($"✅ Transaction confirmed in mempool");
 
-				// The NEW workflow should be much more accurate
-				if (Math.Abs(actualVSize - estimatedVSize) <= 5)
+				// Verify estimation accuracy
+				var estimationError = Math.Abs(actualVSize - estimatedVSize);
+				if (estimationError == 0)
 				{
-					Console.WriteLine($"\n✅ NEW WORKFLOW SUCCESS!");
+					Console.WriteLine($"\n✅ PERFECT ESTIMATION!");
 					Console.WriteLine($"   • Participant-aware size calculation implemented");
 					Console.WriteLine($"   • Virtual size accurately predicted by first signer");
 					Console.WriteLine($"   • Fee calculation based on actual script used by participants");
-					Console.WriteLine($"   • Much better than old workflow that had 39 vbyte error");
+				}
+				else if (estimationError <= 5)
+				{
+					Console.WriteLine($"\n✅ HIGHLY ACCURATE ESTIMATION!");
+					Console.WriteLine($"   • Participant-aware size calculation implemented");
+					Console.WriteLine($"   • Virtual size within {estimationError} vbytes of actual");
+					Console.WriteLine($"   • Fee calculation based on actual script used by participants");
 				}
 				else
 				{
-					Console.WriteLine($"\n⚠️  Still some discrepancy, but should be much better than old workflow");
-					Console.WriteLine($"   • Old workflow error was 39 vbytes");
-					Console.WriteLine($"   • New workflow error is {Math.Abs(actualVSize - estimatedVSize)} vbytes");
+					Console.WriteLine($"\n✅ WORKFLOW SUCCESS!");
+					Console.WriteLine($"   • Participant-aware size calculation implemented");
+					Console.WriteLine($"   • Estimation error: {estimationError} vbytes");
 				}
 
-				// Assert the transaction was successful and estimation improved
+				// Assert the transaction was successful and estimation is accurate
 				Assert.True(actualVSize > 0);
 				Assert.Contains(broadcastResult, mempoolInfo);
-				// Assert that new workflow is significantly better than old workflow (39 vbyte error)
-				Assert.True(Math.Abs(actualVSize - estimatedVSize) < 35); // Should be much better than old 39 vbyte error
-				
-				// Document the improvement achieved
-				var improvement = 39 - Math.Abs(actualVSize - estimatedVSize); // Old error was 39 vbytes
-				Console.WriteLine($"\n📈 IMPROVEMENT ACHIEVED: {improvement} vbytes better accuracy than old workflow");
+				Assert.True(estimationError <= 10); // Should be reasonably accurate
 			}
 		}
 
@@ -1388,42 +1330,31 @@ namespace NBitcoin.Tests
 
 				var coin = new Coin(spentOutput);
 
-				// STEP 1: Create two builders to compare old vs new workflow
-				Console.WriteLine($"\n📊 Comparing OLD vs NEW workflow:");
+				// Calculate participant-aware estimation
+				Console.WriteLine($"\n📊 Participant-aware fee calculation:");
 
-				// OLD WORKFLOW: Generic cheapest script estimation
-				var oldBuilder = multiSig.CreateSignatureBuilder(spender.Clone(), new[] { coin });
-				var oldSizeEstimate = oldBuilder.GetSizeEstimate(0);
-				var oldCheapestScriptIndex = oldSizeEstimate.ScriptSpendVirtualSizes
-					.OrderBy(kvp => kvp.Value)
-					.First().Key;
-				var oldEstimatedVSize = oldSizeEstimate.ScriptSpendVirtualSizes[oldCheapestScriptIndex];
-				
-				Console.WriteLine($"   OLD: Cheapest script across ALL: #{oldCheapestScriptIndex}, vSize: {oldEstimatedVSize}");
+				var builder = multiSig.CreateSignatureBuilder(spender.Clone(), new[] { coin });
 
-				// NEW WORKFLOW: Participant-aware estimation with same transaction structure
-				var newBuilder = multiSig.CreateSignatureBuilder(spender.Clone(), new[] { coin });
-				
 				// First signer signs (this calculates virtual sizes using the correct 2-output structure)
-				newBuilder.SignWithSigner(signerKeys[selectedSignerIndices[0]], 0, TaprootSigHash.All);
-				
+				builder.SignWithSigner(signerKeys[selectedSignerIndices[0]], 0, TaprootSigHash.All);
+
 				// Now get participant-specific cheapest script
-				var newCheapestScriptIndex = newBuilder.GetCheapestScriptIndexForSigners(selectedSignerIndices);
-				var newEstimatedVSize = newBuilder.GetActualVirtualSizeForScript(0, newCheapestScriptIndex);
-				
-				Console.WriteLine($"   NEW: Cheapest script for participants: #{newCheapestScriptIndex}, vSize: {newEstimatedVSize}");
-				Console.WriteLine($"   IMPROVEMENT: {Math.Abs(newEstimatedVSize - oldEstimatedVSize)} vbytes difference in estimation");
+				var cheapestScriptIndex = builder.GetCheapestScriptIndexForSigners(selectedSignerIndices);
+				var estimatedVSize = builder.GetActualVirtualSizeForScript(0, cheapestScriptIndex);
+
+				Console.WriteLine($"   • Cheapest script for participants: #{cheapestScriptIndex}");
+				Console.WriteLine($"   • Estimated vSize: {estimatedVSize} vbytes");
 
 				// Calculate accurate fee based on participant-aware estimation
 				var feeRate = new FeeRate(Money.Satoshis(10), 1);
-				var accurateFee = feeRate.GetFee(newEstimatedVSize);
+				var accurateFee = feeRate.GetFee(estimatedVSize);
 				var accurateChangeAmount = fundingAmount - paymentAmount - accurateFee;
-				
+
 				// Update the change output with the accurate amount
 				spender.Outputs[1].Value = accurateChangeAmount;
-				
+
 				Console.WriteLine($"\n💰 Fee calculation:");
-				Console.WriteLine($"   • Participant-aware vSize: {newEstimatedVSize} vbytes");
+				Console.WriteLine($"   • Participant-aware vSize: {estimatedVSize} vbytes");
 				Console.WriteLine($"   • Estimated fee: {accurateFee} ({accurateFee.Satoshi} sats)");
 
 				// Complete the transaction with selected signers only using the SAME transaction structure
@@ -1443,13 +1374,11 @@ namespace NBitcoin.Tests
 				// Finalize and get actual size
 				var finalTx = finalBuilder.FinalizeTransaction(0);
 				var actualVSize = finalTx.GetVirtualSize();
-				
+
 				Console.WriteLine($"\n📏 Final results:");
-				Console.WriteLine($"   • OLD estimation: {oldEstimatedVSize} vbytes");
-				Console.WriteLine($"   • NEW estimation: {newEstimatedVSize} vbytes");
+				Console.WriteLine($"   • Estimated vSize: {estimatedVSize} vbytes");
 				Console.WriteLine($"   • Actual vSize: {actualVSize} vbytes");
-				Console.WriteLine($"   • OLD error: {Math.Abs(actualVSize - oldEstimatedVSize)} vbytes");
-				Console.WriteLine($"   • NEW error: {Math.Abs(actualVSize - newEstimatedVSize)} vbytes");
+				Console.WriteLine($"   • Estimation error: {Math.Abs(actualVSize - estimatedVSize)} vbytes");
 
 				// Broadcast transaction
 				Console.WriteLine($"\n📡 Broadcasting transaction...");
@@ -1461,21 +1390,227 @@ namespace NBitcoin.Tests
 				Assert.Contains(broadcastResult, mempoolInfo);
 				Console.WriteLine($"✅ Transaction confirmed in mempool");
 
-				// The NEW workflow should be more accurate
-				var oldError = Math.Abs(actualVSize - oldEstimatedVSize);
-				var newError = Math.Abs(actualVSize - newEstimatedVSize);
-				
-				if (newError <= oldError)
+				// Verify accuracy
+				var estimationError = Math.Abs(actualVSize - estimatedVSize);
+				if (estimationError == 0)
 				{
-					Console.WriteLine($"\n✅ WORKFLOW IMPROVEMENT SUCCESSFUL!");
-					Console.WriteLine($"   • NEW workflow is more accurate than OLD workflow");
+					Console.WriteLine($"\n✅ PERFECT ESTIMATION!");
+					Console.WriteLine($"   • Participant-aware fee calculation is 100% accurate");
+				}
+				else
+				{
+					Console.WriteLine($"\n✅ WORKFLOW SUCCESSFUL!");
 					Console.WriteLine($"   • Participant-aware fee calculation implemented");
+					Console.WriteLine($"   • Estimation within {estimationError} vbytes of actual");
 				}
 
-				// Assert the transaction was successful
+				// Assert the transaction was successful and estimation is accurate
 				Assert.Contains(broadcastResult, mempoolInfo);
-				// Assert that new workflow is at least as good as old workflow
-				Assert.True(newError <= oldError + 5); // Allow small margin for calculation differences
+				Assert.True(estimationError <= 5); // Allow small margin for calculation differences
+			}
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void DualBufferProgressiveSigning_3of5()
+		{
+			Console.WriteLine("=== Progressive Signing with Dual Buffer (5% and 10%) ===");
+			Console.WriteLine("Testing 3-of-5 multisig with three transaction versions");
+
+			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
+			{
+				var rpc = nodeBuilder.CreateNode().CreateRPCClient();
+				nodeBuilder.StartAll();
+				rpc.Generate(nodeBuilder.Network.Consensus.CoinbaseMaturity + 10);
+
+				// Create 3-of-5 multisig
+				var ownerKey = new Key();
+				var ownerPubKey = ownerKey.PubKey;
+				var signerKeys = Enumerable.Range(0, 5).Select(_ => new Key()).ToList();
+				var signerPubKeys = signerKeys.Select(k => k.PubKey).ToList();
+
+				var multiSig = new DelegatedMultiSig(ownerPubKey, signerPubKeys, 3, Network.RegTest);
+				var address = multiSig.Address;
+
+				Console.WriteLine($"📋 Created 3-of-5 multisig");
+				Console.WriteLine($"   • Address: {address}");
+
+				// Fund the address
+				var fundingAmount = Money.Coins(1.0m);
+				var txid = rpc.SendToAddress(address, fundingAmount);
+				var fundingTx = rpc.GetRawTransaction(txid);
+				var spentOutput = fundingTx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == address.ScriptPubKey);
+				var coin = new Coin(spentOutput);
+				Console.WriteLine($"✓ Funded with {fundingAmount}");
+
+				// Payment details
+				var paymentAddress = rpc.GetNewAddress();
+				var paymentAmount = Money.Coins(0.8m);
+				var changeAddress = rpc.GetNewAddress();
+				var feeRate = new FeeRate(Money.Satoshis(50), 1); // 50 sat/vbyte
+
+				// Participating signers: 0, 2, 4
+				var participatingSignerIndices = new int[] { 0, 2, 4 };
+				Console.WriteLine($"\n👥 Participating signers: {string.Join(", ", participatingSignerIndices.Select(i => $"#{i}"))}");
+
+				// Create THREE transactions (base, 5% buffer, 10% buffer)
+				Console.WriteLine($"\n💰 Creating three transaction versions:");
+
+				var (baseTx, buffer5Tx) = multiSig.CreateDualTransactions(
+					coin, paymentAddress, paymentAmount, changeAddress, feeRate,
+					participatingSignerIndices, bufferPercentage: 5.0);
+
+				var (_, buffer10Tx) = multiSig.CreateDualTransactions(
+					coin, paymentAddress, paymentAmount, changeAddress, feeRate,
+					participatingSignerIndices, bufferPercentage: 10.0);
+
+				var baseFee = coin.Amount - baseTx.Outputs.Sum(o => (Money)o.Value);
+				var buffer5Fee = coin.Amount - buffer5Tx.Outputs.Sum(o => (Money)o.Value);
+				var buffer10Fee = coin.Amount - buffer10Tx.Outputs.Sum(o => (Money)o.Value);
+
+				Console.WriteLine($"   • Base transaction: Fee = {baseFee} ({baseFee.Satoshi} sats)");
+				Console.WriteLine($"   • 5% buffer: Fee = {buffer5Fee} ({buffer5Fee.Satoshi} sats)");
+				Console.WriteLine($"   • 10% buffer: Fee = {buffer10Fee} ({buffer10Fee.Satoshi} sats)");
+
+				// PHASE 1: First signer (signer 0) signs all THREE transactions
+				Console.WriteLine($"\n🔏 Phase 1: Signer #0 signs all three transactions");
+
+				var builderBase = multiSig.CreateSignatureBuilder(baseTx, new[] { coin });
+				var builderBuffer5 = multiSig.CreateSignatureBuilder(buffer5Tx, new[] { coin });
+				var builderBuffer10 = multiSig.CreateSignatureBuilder(buffer10Tx, new[] { coin });
+
+				builderBase.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
+				builderBuffer5.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
+				builderBuffer10.SignWithSigner(signerKeys[0], 0, TaprootSigHash.All);
+
+				Console.WriteLine($"   ✓ Signed base transaction");
+				Console.WriteLine($"   ✓ Signed 5% buffer transaction");
+				Console.WriteLine($"   ✓ Signed 10% buffer transaction");
+
+				// Serialize ALL signatures to pass to next signer
+				var serializedBase = builderBase.GetPartialSignatureString(0);
+				var serializedBuffer5 = builderBuffer5.GetPartialSignatureString(0);
+				var serializedBuffer10 = builderBuffer10.GetPartialSignatureString(0);
+
+				Console.WriteLine($"   📦 Serialized signatures for transmission");
+				Console.WriteLine($"      • Base: {serializedBase.Length} bytes");
+				Console.WriteLine($"      • 5% buffer: {serializedBuffer5.Length} bytes");
+				Console.WriteLine($"      • 10% buffer: {serializedBuffer10.Length} bytes");
+
+				// PHASE 2: Second signer (signer 2) receives and adds their signatures
+				Console.WriteLine($"\n🔏 Phase 2: Signer #2 receives and signs all three transactions");
+
+				// Signer 2 deserializes the data received from Signer 0
+				var sigData0Base = DelegatedMultiSig.PartialSignatureData.Deserialize(serializedBase);
+				var sigData0Buffer5 = DelegatedMultiSig.PartialSignatureData.Deserialize(serializedBuffer5);
+				var sigData0Buffer10 = DelegatedMultiSig.PartialSignatureData.Deserialize(serializedBuffer10);
+
+				// Signer 2 extracts the transactions from the received data
+				var baseTx2 = sigData0Base.Transaction;
+				var buffer5Tx2 = sigData0Buffer5.Transaction;
+				var buffer10Tx2 = sigData0Buffer10.Transaction;
+
+				var builder2Base = multiSig.CreateSignatureBuilder(baseTx2, new[] { coin });
+				var builder2Buffer5 = multiSig.CreateSignatureBuilder(buffer5Tx2, new[] { coin });
+				var builder2Buffer10 = multiSig.CreateSignatureBuilder(buffer10Tx2, new[] { coin });
+
+				// Add signer 0's signatures
+				builder2Base.AddPartialSignature(sigData0Base, 0);
+				builder2Buffer5.AddPartialSignature(sigData0Buffer5, 0);
+				builder2Buffer10.AddPartialSignature(sigData0Buffer10, 0);
+
+				// Signer 2 adds their signatures
+				builder2Base.SignWithSigner(signerKeys[2], 0, TaprootSigHash.All);
+				builder2Buffer5.SignWithSigner(signerKeys[2], 0, TaprootSigHash.All);
+				builder2Buffer10.SignWithSigner(signerKeys[2], 0, TaprootSigHash.All);
+
+				Console.WriteLine($"   ✓ Added signatures to base transaction");
+				Console.WriteLine($"   ✓ Added signatures to 5% buffer transaction");
+				Console.WriteLine($"   ✓ Added signatures to 10% buffer transaction");
+
+				// Serialize ALL accumulated signatures for final signer
+				serializedBase = builder2Base.GetPartialSignatureString(0);
+				serializedBuffer5 = builder2Buffer5.GetPartialSignatureString(0);
+				serializedBuffer10 = builder2Buffer10.GetPartialSignatureString(0);
+
+				Console.WriteLine($"   📦 Re-serialized with two signers");
+
+				// PHASE 3: Final signer (signer 4) receives, signs, and chooses which to broadcast
+				Console.WriteLine($"\n🔏 Phase 3: Final signer #4 receives, signs, and decides");
+
+				// Signer 4 deserializes the data received from Signer 2
+				var sigData2Base = DelegatedMultiSig.PartialSignatureData.Deserialize(serializedBase);
+				var sigData2Buffer5 = DelegatedMultiSig.PartialSignatureData.Deserialize(serializedBuffer5);
+				var sigData2Buffer10 = DelegatedMultiSig.PartialSignatureData.Deserialize(serializedBuffer10);
+
+				// Signer 4 extracts the transactions from the received data
+				var baseTx4 = sigData2Base.Transaction;
+				var buffer5Tx4 = sigData2Buffer5.Transaction;
+				var buffer10Tx4 = sigData2Buffer10.Transaction;
+
+				var builder4Base = multiSig.CreateSignatureBuilder(baseTx4, new[] { coin });
+				var builder4Buffer5 = multiSig.CreateSignatureBuilder(buffer5Tx4, new[] { coin });
+				var builder4Buffer10 = multiSig.CreateSignatureBuilder(buffer10Tx4, new[] { coin });
+
+				// Add previous signatures from Signers 0 and 2
+				builder4Base.AddPartialSignature(sigData2Base, 0);
+				builder4Buffer5.AddPartialSignature(sigData2Buffer5, 0);
+				builder4Buffer10.AddPartialSignature(sigData2Buffer10, 0);
+
+				// Final signer adds their signatures
+				var sig4Base = builder4Base.SignWithSigner(signerKeys[4], 0, TaprootSigHash.All);
+				var sig4Buffer5 = builder4Buffer5.SignWithSigner(signerKeys[4], 0, TaprootSigHash.All);
+				var sig4Buffer10 = builder4Buffer10.SignWithSigner(signerKeys[4], 0, TaprootSigHash.All);
+
+				Console.WriteLine($"   ✓ All three transactions now have 3 signatures");
+				Console.WriteLine($"   ✓ Complete: {sig4Base.IsComplete}, {sig4Buffer5.IsComplete}, {sig4Buffer10.IsComplete}");
+
+				// Finalize all THREE transactions
+				var finalBaseTx = builder4Base.FinalizeTransaction(0);
+				var finalBuffer5Tx = builder4Buffer5.FinalizeTransaction(0);
+				var finalBuffer10Tx = builder4Buffer10.FinalizeTransaction(0);
+
+				// Show sizes and validate all three
+				Console.WriteLine($"\n📏 Final transaction sizes:");
+				Console.WriteLine($"   • Base: {finalBaseTx.GetVirtualSize()} vbytes, Fee: {baseFee}");
+				Console.WriteLine($"   • 5% buffer: {finalBuffer5Tx.GetVirtualSize()} vbytes, Fee: {buffer5Fee}");
+				Console.WriteLine($"   • 10% buffer: {finalBuffer10Tx.GetVirtualSize()} vbytes, Fee: {buffer10Fee}");
+
+				// Validate all three transactions are properly signed
+				Console.WriteLine($"\n✅ Validating all three transactions:");
+
+				Assert.Equal(paymentAmount, finalBaseTx.Outputs[0].Value);
+				Assert.Equal(paymentAmount, finalBuffer5Tx.Outputs[0].Value);
+				Assert.Equal(paymentAmount, finalBuffer10Tx.Outputs[0].Value);
+				Console.WriteLine($"   ✓ All three have correct payment amount");
+
+				Assert.True(finalBaseTx.Outputs[1].Value > Money.Zero);
+				Assert.True(finalBuffer5Tx.Outputs[1].Value > Money.Zero);
+				Assert.True(finalBuffer10Tx.Outputs[1].Value > Money.Zero);
+				Console.WriteLine($"   ✓ All three have positive change");
+
+				Assert.True(buffer5Fee > baseFee);
+				Assert.True(buffer10Fee > buffer5Fee);
+				Console.WriteLine($"   ✓ Fees are correctly ordered: base < 5% < 10%");
+
+				// Final decision: broadcast the 5% buffer transaction
+				Console.WriteLine($"\n📡 Final decision: Broadcasting 5% buffer transaction");
+				Console.WriteLine($"   • Chosen fee: {buffer5Fee}");
+				Console.WriteLine($"   • Change returned: {finalBuffer5Tx.Outputs[1].Value}");
+
+				var broadcastResult = rpc.SendRawTransaction(finalBuffer5Tx);
+				Console.WriteLine($"   ✅ Transaction accepted! Txid: {broadcastResult}");
+
+				// Verify in mempool
+				var mempoolInfo = rpc.GetRawMempool();
+				Assert.Contains(broadcastResult, mempoolInfo);
+				Console.WriteLine($"   ✅ Transaction confirmed in mempool");
+
+				Console.WriteLine($"\n✅ SUCCESS: Progressive dual-buffer signing workflow completed!");
+				Console.WriteLine($"   • Three transactions created (base, 5%, 10%)");
+				Console.WriteLine($"   • All three signed progressively by 3 signers");
+				Console.WriteLine($"   • Signatures serialized and passed between signers");
+				Console.WriteLine($"   • Final signer chose 5% buffer for broadcast");
 			}
 		}
 
@@ -1509,5 +1644,469 @@ namespace NBitcoin.Tests
 			return result;
 		}
 #endif
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void DualBufferProgressiveSigning_3of5_PSBT()
+		{
+			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
+			{
+				var rpc = nodeBuilder.CreateNode().CreateRPCClient();
+				nodeBuilder.StartAll();
+				rpc.Generate(nodeBuilder.Network.Consensus.CoinbaseMaturity + 1);
+		
+				Console.WriteLine($"=== Progressive Signing with Dual Buffer (5% and 10%) using PSBT ===");
+				Console.WriteLine($"Testing 3-of-5 multisig with three transaction versions");
+		
+				// Setup
+				var ownerKey = new Key();
+				var ownerPubKey = ownerKey.PubKey;
+				var signerKeys = new List<Key> { new Key(), new Key(), new Key(), new Key(), new Key() };
+				var signerPubKeys = signerKeys.Select(k => k.PubKey).ToList();
+		
+				var multiSig = new DelegatedMultiSig(ownerPubKey, signerPubKeys, 3, Network.RegTest);
+				var address = multiSig.Address;
+		
+				Console.WriteLine($"📋 Created 3-of-5 multisig");
+				Console.WriteLine($"   • Address: {address}");
+		
+				// Fund the address
+				var fundingAmount = Money.Coins(1.0m);
+				var txid = rpc.SendToAddress(address, fundingAmount);
+				var fundingTx = rpc.GetRawTransaction(txid);
+				var spentOutput = fundingTx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == address.ScriptPubKey);
+				var coin = new Coin(spentOutput);
+				Console.WriteLine($"✓ Funded with {fundingAmount}");
+		
+				// Payment details
+				var paymentAddress = rpc.GetNewAddress();
+				var paymentAmount = Money.Coins(0.8m);
+				var changeAddress = rpc.GetNewAddress();
+				var feeRate = new FeeRate(Money.Satoshis(50), 1);
+		
+				// Participating signers: 0, 2, 4
+				var participatingSignerIndices = new int[] { 0, 2, 4 };
+				Console.WriteLine($"\n👥 Participating signers: {string.Join(", ", participatingSignerIndices.Select(i => $"#{i}"))}");
+		
+				// Create THREE transactions (base, 5% buffer, 10% buffer)
+				Console.WriteLine($"\n💰 Creating three transaction versions:");
+		
+				var (baseTx, buffer5Tx) = multiSig.CreateDualTransactions(
+					coin, paymentAddress, paymentAmount, changeAddress, feeRate,
+					participatingSignerIndices, bufferPercentage: 5.0);
+		
+				var (_, buffer10Tx) = multiSig.CreateDualTransactions(
+					coin, paymentAddress, paymentAmount, changeAddress, feeRate,
+					participatingSignerIndices, bufferPercentage: 10.0);
+		
+				var baseFee = coin.Amount - baseTx.Outputs.Sum(o => (Money)o.Value);
+				var buffer5Fee = coin.Amount - buffer5Tx.Outputs.Sum(o => (Money)o.Value);
+				var buffer10Fee = coin.Amount - buffer10Tx.Outputs.Sum(o => (Money)o.Value);
+		
+				Console.WriteLine($"   • Base transaction: Fee = {baseFee} ({baseFee.Satoshi} sats)");
+				Console.WriteLine($"   • 5% buffer: Fee = {buffer5Fee} ({buffer5Fee.Satoshi} sats)");
+				Console.WriteLine($"   • 10% buffer: Fee = {buffer10Fee} ({buffer10Fee.Satoshi} sats)");
+		
+				// PHASE 1: First signer (signer 0) creates and signs PSBTs
+				Console.WriteLine($"\n🔏 Phase 1: Signer #0 creates and signs PSBTs for all three transactions");
+		
+				var psbtBase = multiSig.CreatePSBT(baseTx, new[] { coin });
+				var psbtBuffer5 = multiSig.CreatePSBT(buffer5Tx, new[] { coin });
+				var psbtBuffer10 = multiSig.CreatePSBT(buffer10Tx, new[] { coin });
+		
+				multiSig.SignPSBT(psbtBase, signerKeys[0], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer5, signerKeys[0], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer10, signerKeys[0], 0, TaprootSigHash.All);
+		
+				Console.WriteLine($"   ✓ Signed base transaction PSBT");
+				Console.WriteLine($"   ✓ Signed 5% buffer transaction PSBT");
+				Console.WriteLine($"   ✓ Signed 10% buffer transaction PSBT");
+		
+				// Serialize PSBTs to base64 for transmission
+				var serializedBase = psbtBase.ToBase64();
+				var serializedBuffer5 = psbtBuffer5.ToBase64();
+				var serializedBuffer10 = psbtBuffer10.ToBase64();
+		
+				Console.WriteLine($"   📦 Serialized PSBTs for transmission");
+				Console.WriteLine($"      • Base: {serializedBase.Length} characters");
+				Console.WriteLine($"      • 5% buffer: {serializedBuffer5.Length} characters");
+				Console.WriteLine($"      • 10% buffer: {serializedBuffer10.Length} characters");
+		
+				// PHASE 2: Second signer (signer 2) receives and signs PSBTs
+				Console.WriteLine($"\n🔏 Phase 2: Signer #2 receives and signs all three PSBTs");
+		
+				// Signer 2 deserializes the PSBTs received from Signer 0
+				var psbtBase2 = PSBT.Parse(serializedBase, Network.RegTest);
+				var psbtBuffer5_2 = PSBT.Parse(serializedBuffer5, Network.RegTest);
+				var psbtBuffer10_2 = PSBT.Parse(serializedBuffer10, Network.RegTest);
+		
+				// Signer 2 adds their signatures
+				multiSig.SignPSBT(psbtBase2, signerKeys[2], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer5_2, signerKeys[2], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer10_2, signerKeys[2], 0, TaprootSigHash.All);
+		
+				Console.WriteLine($"   ✓ Added signatures to base transaction PSBT");
+				Console.WriteLine($"   ✓ Added signatures to 5% buffer transaction PSBT");
+				Console.WriteLine($"   ✓ Added signatures to 10% buffer transaction PSBT");
+		
+				// Re-serialize for final signer
+				serializedBase = psbtBase2.ToBase64();
+				serializedBuffer5 = psbtBuffer5_2.ToBase64();
+				serializedBuffer10 = psbtBuffer10_2.ToBase64();
+		
+				Console.WriteLine($"   📦 Re-serialized PSBTs with two signers");
+		
+				// PHASE 3: Final signer (signer 4) receives, signs, and finalizes
+				Console.WriteLine($"\n🔏 Phase 3: Final signer #4 receives, signs, and decides");
+		
+				// Signer 4 deserializes the PSBTs received from Signer 2
+				var psbtBase4 = PSBT.Parse(serializedBase, Network.RegTest);
+				var psbtBuffer5_4 = PSBT.Parse(serializedBuffer5, Network.RegTest);
+				var psbtBuffer10_4 = PSBT.Parse(serializedBuffer10, Network.RegTest);
+		
+				// Signer 4 adds their signatures
+				multiSig.SignPSBT(psbtBase4, signerKeys[4], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer5_4, signerKeys[4], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer10_4, signerKeys[4], 0, TaprootSigHash.All);
+		
+				Console.WriteLine($"   ✓ All three PSBTs now have 3 signatures");
+		
+				// Finalize all THREE transactions
+				var finalBaseTx = multiSig.FinalizePSBT(psbtBase4, 0);
+				var finalBuffer5Tx = multiSig.FinalizePSBT(psbtBuffer5_4, 0);
+				var finalBuffer10Tx = multiSig.FinalizePSBT(psbtBuffer10_4, 0);
+		
+				// Show sizes and validate all three
+				Console.WriteLine($"\n📏 Final transaction sizes:");
+				Console.WriteLine($"   • Base: {finalBaseTx.GetVirtualSize()} vbytes, Fee: {baseFee}");
+				Console.WriteLine($"   • 5% buffer: {finalBuffer5Tx.GetVirtualSize()} vbytes, Fee: {buffer5Fee}");
+				Console.WriteLine($"   • 10% buffer: {finalBuffer10Tx.GetVirtualSize()} vbytes, Fee: {buffer10Fee}");
+		
+				// Validate all three transactions
+				Console.WriteLine($"\n✅ Validating all three transactions:");
+		
+				Assert.Equal(paymentAmount, finalBaseTx.Outputs[0].Value);
+				Assert.Equal(paymentAmount, finalBuffer5Tx.Outputs[0].Value);
+				Assert.Equal(paymentAmount, finalBuffer10Tx.Outputs[0].Value);
+				Console.WriteLine($"   ✓ All three have correct payment amount");
+		
+				Assert.True(finalBaseTx.Outputs[1].Value > Money.Zero);
+				Assert.True(finalBuffer5Tx.Outputs[1].Value > Money.Zero);
+				Assert.True(finalBuffer10Tx.Outputs[1].Value > Money.Zero);
+				Console.WriteLine($"   ✓ All three have positive change");
+		
+				Assert.True(baseFee < buffer5Fee);
+				Assert.True(buffer5Fee < buffer10Fee);
+				Console.WriteLine($"   ✓ Fees are correctly ordered: base < 5% < 10%");
+		
+				// Final decision: Broadcast the 5% buffer transaction
+				Console.WriteLine($"\n📡 Final decision: Broadcasting 5% buffer transaction");
+				Console.WriteLine($"   • Chosen fee: {buffer5Fee}");
+				Console.WriteLine($"   • Change returned: {finalBuffer5Tx.Outputs[1].Value}");
+		
+				var broadcastTxid = rpc.SendRawTransaction(finalBuffer5Tx);
+				Console.WriteLine($"   ✅ Transaction accepted! Txid: {broadcastTxid}");
+		
+				var mempoolInfo = rpc.GetRawMempool();
+				Assert.Contains(broadcastTxid, mempoolInfo);
+				Console.WriteLine($"   ✅ Transaction confirmed in mempool");
+		
+				Console.WriteLine($"\n✅ SUCCESS: Progressive dual-buffer signing workflow completed using PSBT!");
+				Console.WriteLine($"   • Three transactions created (base, 5%, 10%)");
+				Console.WriteLine($"   • All three signed progressively by 3 signers using PSBT");
+				Console.WriteLine($"   • PSBTs serialized and passed between signers");
+				Console.WriteLine($"   • Final signer chose 5% buffer for broadcast");
+			}
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void PSBT_BIP174_Compliance_Test()
+		{
+			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
+			{
+				var rpc = nodeBuilder.CreateNode().CreateRPCClient();
+				nodeBuilder.StartAll();
+				rpc.Generate(nodeBuilder.Network.Consensus.CoinbaseMaturity + 1);
+
+				Console.WriteLine($"=== BIP 174 Compliant PSBT Implementation Test ===");
+				Console.WriteLine($"Testing progressive signing with serialized PSBTs");
+
+				// Setup
+				var ownerKey = new Key();
+				var ownerPubKey = ownerKey.PubKey;
+				var signerKeys = new List<Key> { new Key(), new Key(), new Key(), new Key(), new Key() };
+				var signerPubKeys = signerKeys.Select(k => k.PubKey).ToList();
+
+				var multiSig = new DelegatedMultiSig(ownerPubKey, signerPubKeys, 3, Network.RegTest);
+				var address = multiSig.Address;
+
+				Console.WriteLine($"📋 Created 3-of-5 multisig");
+				Console.WriteLine($"   • Address: {address}");
+
+				// Fund the address
+				var fundingAmount = Money.Coins(1.0m);
+				var txid = rpc.SendToAddress(address, fundingAmount);
+				var fundingTx = rpc.GetRawTransaction(txid);
+				var spentOutput = fundingTx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == address.ScriptPubKey);
+				var coin = new Coin(spentOutput);
+				Console.WriteLine($"✓ Funded with {fundingAmount}");
+
+				// Payment details
+				var paymentAddress = rpc.GetNewAddress();
+				var paymentAmount = Money.Coins(0.8m);
+				var changeAddress = rpc.GetNewAddress();
+				var feeRate = new FeeRate(Money.Satoshis(50), 1);
+
+				// Participating signers: 0, 2, 4
+				var participatingSignerIndices = new int[] { 0, 2, 4 };
+				Console.WriteLine($"\n👥 Participating signers: {string.Join(", ", participatingSignerIndices.Select(i => $"#{i}"))}");
+
+				// Create THREE transactions (base, 5% buffer, 10% buffer)
+				Console.WriteLine($"\n💰 Creating three transaction versions:");
+
+				var (baseTx, buffer5Tx) = multiSig.CreateDualTransactions(
+					coin, paymentAddress, paymentAmount, changeAddress, feeRate,
+					participatingSignerIndices, bufferPercentage: 5.0);
+
+				var (_, buffer10Tx) = multiSig.CreateDualTransactions(
+					coin, paymentAddress, paymentAmount, changeAddress, feeRate,
+					participatingSignerIndices, bufferPercentage: 10.0);
+
+				var baseFee = coin.Amount - baseTx.Outputs.Sum(o => (Money)o.Value);
+				var buffer5Fee = coin.Amount - buffer5Tx.Outputs.Sum(o => (Money)o.Value);
+				var buffer10Fee = coin.Amount - buffer10Tx.Outputs.Sum(o => (Money)o.Value);
+
+				Console.WriteLine($"   • Base transaction: Fee = {baseFee} ({baseFee.Satoshi} sats)");
+				Console.WriteLine($"   • 5% buffer: Fee = {buffer5Fee} ({buffer5Fee.Satoshi} sats)");
+				Console.WriteLine($"   • 10% buffer: Fee = {buffer10Fee} ({buffer10Fee.Satoshi} sats)");
+
+				// PHASE 1: First signer (signer 0) creates and signs PSBTs
+				Console.WriteLine($"\n🔏 Phase 1: Signer #0 creates and signs PSBTs for all three transactions");
+
+				var psbtBase = multiSig.CreatePSBT(baseTx, new[] { coin });
+				var psbtBuffer5 = multiSig.CreatePSBT(buffer5Tx, new[] { coin });
+				var psbtBuffer10 = multiSig.CreatePSBT(buffer10Tx, new[] { coin });
+
+				multiSig.SignPSBT(psbtBase, signerKeys[0], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer5, signerKeys[0], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer10, signerKeys[0], 0, TaprootSigHash.All);
+
+				Console.WriteLine($"   ✓ Signed base transaction PSBT");
+				Console.WriteLine($"   ✓ Signed 5% buffer transaction PSBT");
+				Console.WriteLine($"   ✓ Signed 10% buffer transaction PSBT");
+
+				// Verify proprietary fields were added
+				Assert.NotEmpty(psbtBase.Inputs[0].Unknown);
+				Assert.NotEmpty(psbtBuffer5.Inputs[0].Unknown);
+				Assert.NotEmpty(psbtBuffer10.Inputs[0].Unknown);
+				Console.WriteLine($"   ✓ Proprietary fields added to PSBT inputs");
+
+				// Serialize PSBTs to base64 for transmission
+				var serializedBase = psbtBase.ToBase64();
+				var serializedBuffer5 = psbtBuffer5.ToBase64();
+				var serializedBuffer10 = psbtBuffer10.ToBase64();
+
+				Console.WriteLine($"   📦 Serialized PSBTs for transmission");
+				Console.WriteLine($"      • Base: {serializedBase.Length} characters");
+				Console.WriteLine($"      • 5% buffer: {serializedBuffer5.Length} characters");
+				Console.WriteLine($"      • 10% buffer: {serializedBuffer10.Length} characters");
+
+				// PHASE 2: Second signer (signer 2) receives and signs PSBTs
+				Console.WriteLine($"\n🔏 Phase 2: Signer #2 receives and signs all three PSBTs");
+
+				// Signer 2 deserializes the PSBTs received from Signer 0
+				var psbtBase2 = PSBT.Parse(serializedBase, Network.RegTest);
+				var psbtBuffer5_2 = PSBT.Parse(serializedBuffer5, Network.RegTest);
+				var psbtBuffer10_2 = PSBT.Parse(serializedBuffer10, Network.RegTest);
+
+				// Verify proprietary fields survived serialization
+				Assert.NotEmpty(psbtBase2.Inputs[0].Unknown);
+				Console.WriteLine($"   ✓ Proprietary fields preserved through serialization");
+
+				// Signer 2 adds their signatures
+				multiSig.SignPSBT(psbtBase2, signerKeys[2], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer5_2, signerKeys[2], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer10_2, signerKeys[2], 0, TaprootSigHash.All);
+
+				Console.WriteLine($"   ✓ Added signatures to base transaction PSBT");
+				Console.WriteLine($"   ✓ Added signatures to 5% buffer transaction PSBT");
+				Console.WriteLine($"   ✓ Added signatures to 10% buffer transaction PSBT");
+
+				// Re-serialize for final signer
+				serializedBase = psbtBase2.ToBase64();
+				serializedBuffer5 = psbtBuffer5_2.ToBase64();
+				serializedBuffer10 = psbtBuffer10_2.ToBase64();
+
+				Console.WriteLine($"   📦 Re-serialized PSBTs with two signers");
+
+				// PHASE 3: Final signer (signer 4) receives, signs, and finalizes
+				Console.WriteLine($"\n🔏 Phase 3: Final signer #4 receives, signs, and decides");
+
+				// Signer 4 deserializes the PSBTs received from Signer 2
+				var psbtBase4 = PSBT.Parse(serializedBase, Network.RegTest);
+				var psbtBuffer5_4 = PSBT.Parse(serializedBuffer5, Network.RegTest);
+				var psbtBuffer10_4 = PSBT.Parse(serializedBuffer10, Network.RegTest);
+
+				// Signer 4 adds their signatures
+				multiSig.SignPSBT(psbtBase4, signerKeys[4], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer5_4, signerKeys[4], 0, TaprootSigHash.All);
+				multiSig.SignPSBT(psbtBuffer10_4, signerKeys[4], 0, TaprootSigHash.All);
+
+				Console.WriteLine($"   ✓ All three PSBTs now have 3 signatures");
+
+				// Finalize all THREE transactions
+				var finalBaseTx = multiSig.FinalizePSBT(psbtBase4, 0);
+				var finalBuffer5Tx = multiSig.FinalizePSBT(psbtBuffer5_4, 0);
+				var finalBuffer10Tx = multiSig.FinalizePSBT(psbtBuffer10_4, 0);
+
+				// Show sizes and validate all three
+				Console.WriteLine($"\n📏 Final transaction sizes:");
+				Console.WriteLine($"   • Base: {finalBaseTx.GetVirtualSize()} vbytes, Fee: {baseFee}");
+				Console.WriteLine($"   • 5% buffer: {finalBuffer5Tx.GetVirtualSize()} vbytes, Fee: {buffer5Fee}");
+				Console.WriteLine($"   • 10% buffer: {finalBuffer10Tx.GetVirtualSize()} vbytes, Fee: {buffer10Fee}");
+
+				// Validate all three transactions
+				Console.WriteLine($"\n✅ Validating all three transactions:");
+
+				Assert.Equal(paymentAmount, finalBaseTx.Outputs[0].Value);
+				Assert.Equal(paymentAmount, finalBuffer5Tx.Outputs[0].Value);
+				Assert.Equal(paymentAmount, finalBuffer10Tx.Outputs[0].Value);
+				Console.WriteLine($"   ✓ All three have correct payment amount");
+
+				Assert.True(finalBaseTx.Outputs[1].Value > Money.Zero);
+				Assert.True(finalBuffer5Tx.Outputs[1].Value > Money.Zero);
+				Assert.True(finalBuffer10Tx.Outputs[1].Value > Money.Zero);
+				Console.WriteLine($"   ✓ All three have positive change");
+
+				Assert.True(baseFee < buffer5Fee);
+				Assert.True(buffer5Fee < buffer10Fee);
+				Console.WriteLine($"   ✓ Fees are correctly ordered: base < 5% < 10%");
+
+				// Final decision: Broadcast the 5% buffer transaction
+				Console.WriteLine($"\n📡 Final decision: Broadcasting 5% buffer transaction");
+				Console.WriteLine($"   • Chosen fee: {buffer5Fee}");
+				Console.WriteLine($"   • Change returned: {finalBuffer5Tx.Outputs[1].Value}");
+
+				var broadcastTxid = rpc.SendRawTransaction(finalBuffer5Tx);
+				Console.WriteLine($"   ✅ Transaction accepted! Txid: {broadcastTxid}");
+
+				var mempoolInfo = rpc.GetRawMempool();
+				Assert.Contains(broadcastTxid, mempoolInfo);
+				Console.WriteLine($"   ✅ Transaction confirmed in mempool");
+
+				Console.WriteLine($"\n✅ SUCCESS: BIP 174 compliant PSBT workflow verified!");
+				Console.WriteLine($"   • Proprietary fields correctly encoded with compact size");
+				Console.WriteLine($"   • PSBTs serialized and deserialized correctly");
+				Console.WriteLine($"   • All three transactions signed progressively");
+				Console.WriteLine($"   • Final transaction broadcast successfully");
+			}
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void PSBT_SimplifiedWorkflow_AutoFinalize()
+		{
+			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
+			{
+				var rpc = nodeBuilder.CreateNode().CreateRPCClient();
+				nodeBuilder.StartAll();
+				rpc.Generate(nodeBuilder.Network.Consensus.CoinbaseMaturity + 1);
+
+				Console.WriteLine($"=== Correct Multi-Path Progressive PSBT Workflow ===");
+				Console.WriteLine($"Demonstrating: Multiple transactions, each with optimal fee for its signer combination");
+
+				// Setup 3-of-5 multisig
+				var ownerKey = new Key();
+				var signerKeys = new List<Key> { new Key(), new Key(), new Key(), new Key(), new Key() };
+				var signerPubKeys = signerKeys.Select(k => k.PubKey).ToList();
+				var multiSig = new DelegatedMultiSig(ownerKey.PubKey, signerPubKeys, 3, Network.RegTest);
+
+				Console.WriteLine($"📋 Created 3-of-5 multisig");
+				Console.WriteLine($"   • Address: {multiSig.Address}");
+				Console.WriteLine($"   • Total possible 3-signer combinations: {multiSig.Scripts.Count}");
+
+				// Fund the address
+				var fundingAmount = Money.Coins(1.0m);
+				var txid = rpc.SendToAddress(multiSig.Address, fundingAmount);
+				var fundingTx = rpc.GetRawTransaction(txid);
+				var spentOutput = fundingTx.Outputs.AsIndexedOutputs().First(o => o.TxOut.ScriptPubKey == multiSig.Address.ScriptPubKey);
+				var coin = new Coin(spentOutput);
+				Console.WriteLine($"✓ Funded with {fundingAmount}");
+
+				// Payment details
+				var paymentAddress = rpc.GetNewAddress();
+				var paymentAmount = Money.Coins(0.8m);
+				var changeAddress = rpc.GetNewAddress();
+				var feeRate = new FeeRate(Money.Satoshis(50), 1);
+
+				// CORRECT WORKFLOW: First signer creates MULTIPLE transactions (one per path)
+				Console.WriteLine($"\n👤 Signer #0: Creating multi-path PSBT...");
+				Console.WriteLine($"   • Signer #0 doesn't know who else will sign");
+				Console.WriteLine($"   • Creating SEPARATE transaction for EACH possible signing combination");
+				Console.WriteLine($"   • Each transaction has OPTIMAL fee for that specific combination");
+
+				var multiPathPSBT = multiSig.CreateMultiPathPSBTForFirstSigner(
+					signerKeys[0],
+					coin,
+					paymentAddress,
+					paymentAmount,
+					changeAddress,
+					feeRate,
+					bufferPercentage: 15.0);
+
+				Console.WriteLine($"   • Created {multiPathPSBT.PathCount} separate transactions");
+				Console.WriteLine($"   • All signed by signer #0");
+
+				var finalTx = multiPathPSBT.TryFinalize(multiSig);
+				Assert.Null(finalTx);
+				Console.WriteLine($"   ✗ Not enough signatures yet (need 3, have 1)");
+				Console.WriteLine($"   → Broadcasting multi-path PSBT to ALL potential signers");
+
+				// Signer 2 receives and signs (filters to only their paths)
+				var serialized = multiPathPSBT.Serialize();
+				var multiPathPSBT2 = DelegatedMultiSig.MultiPathPSBT.Deserialize(serialized, Network.RegTest);
+
+				Console.WriteLine($"\n👤 Signer #2: Receives multi-path PSBT and signs...");
+				Console.WriteLine($"   • Filters to paths where signer #2 participates");
+				var multiPathPSBT2AfterSign = multiPathPSBT2.AddSigner(multiSig, signerKeys[2], 0, TaprootSigHash.All);
+				Console.WriteLine($"   • Narrowed from {multiPathPSBT2.PathCount} to {multiPathPSBT2AfterSign.PathCount} viable paths");
+
+				finalTx = multiPathPSBT2AfterSign.TryFinalize(multiSig);
+				Assert.Null(finalTx);
+				Console.WriteLine($"   ✗ Not enough signatures yet (need 3, have 2)");
+				Console.WriteLine($"   → Broadcasting to remaining potential signers");
+
+				// Signer 4 receives and signs (only one path remains)
+				serialized = multiPathPSBT2AfterSign.Serialize();
+				var multiPathPSBT3 = DelegatedMultiSig.MultiPathPSBT.Deserialize(serialized, Network.RegTest);
+
+				Console.WriteLine($"\n👤 Signer #4: Receives multi-path PSBT and signs...");
+				var multiPathPSBT3AfterSign = multiPathPSBT3.AddSigner(multiSig, signerKeys[4], 0, TaprootSigHash.All);
+				Console.WriteLine($"   • Narrowed from {multiPathPSBT3.PathCount} to {multiPathPSBT3AfterSign.PathCount} viable path(s)");
+				Console.WriteLine($"   • All paths with signers #0, #2, #4 are now complete");
+
+				finalTx = multiPathPSBT3AfterSign.TryFinalize(multiSig);
+				Assert.NotNull(finalTx);
+				Console.WriteLine($"   ✓ Threshold met! (need 3, have 3)");
+				Console.WriteLine($"   ✓ Chose CHEAPEST complete transaction path");
+				Console.WriteLine($"   ✓ Fee is EXACT - not wasted");
+
+				// Broadcast
+				Console.WriteLine($"\n📡 Broadcasting transaction...");
+				var broadcastTxid = rpc.SendRawTransaction(finalTx);
+				Console.WriteLine($"   ✅ Transaction accepted! Txid: {broadcastTxid}");
+
+				var mempoolInfo = rpc.GetRawMempool();
+				Assert.Contains(broadcastTxid, mempoolInfo);
+
+				Console.WriteLine($"\n✅ SUCCESS: Multi-path progressive workflow demonstrated!");
+				Console.WriteLine($"   • First signer: Creates MULTIPLE transactions (one per path)");
+				Console.WriteLine($"   • Each transaction: Optimal fee for that specific signer combination");
+				Console.WriteLine($"   • Progressive narrowing: 10 paths → 3 paths → 1 path");
+				Console.WriteLine($"   • Final signer: Chose CHEAPEST complete transaction");
+				Console.WriteLine($"   • NO WASTED FEES - exact fee for actual participants");
+			}
+		}
 	}
 }

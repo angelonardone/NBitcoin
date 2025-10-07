@@ -12,6 +12,109 @@ using NBitcoin.Secp256k1.Musig;
 namespace NBitcoin
 {
 #if HAS_SPAN
+	/// <summary>
+	/// DelegatedMultiSig2: Taproot-based k-of-n multisig using MuSig2 signature aggregation.
+	///
+	/// PROGRESSIVE SIGNATURE COLLECTION WORKFLOW (DUAL-TRANSACTION):
+	/// ==============================================================
+	///
+	/// This implementation supports a dual-transaction progressive signing protocol where
+	/// TWO complete transactions (base fee and buffered fee) are signed in parallel,
+	/// allowing the final signer to choose which one to broadcast based on network conditions.
+	///
+	/// THE PROBLEM:
+	/// ------------
+	/// In k-of-n multisig scenarios, you don't know which k signers will participate until
+	/// they actually sign. Different signing combinations may have different transaction sizes.
+	/// If you calculate fees upfront based on a guess, you risk underpaying (transaction rejected)
+	/// or overpaying (wasting money).
+	///
+	/// THE SOLUTION - Dual-Transaction Progressive Protocol:
+	/// ------------------------------------------------------
+	///
+	/// PHASE 0: Setup (Transaction Creator)
+	///   - Identifies the first k signers who will participate
+	///   - Calculates the cheapest script combination for those signers
+	///   - Estimates virtual size for that combination
+	///   - Creates TWO separate transactions:
+	///     * Transaction A (Base): change = input - payment - fee(base_vsize)
+	///     * Transaction B (Buffered): change = input - payment - fee(base_vsize * (1 + buffer%))
+	///   - Sends BOTH transactions to first signer
+	///
+	/// STEP 1: First Signer (MuSig2 Nonce Exchange)
+	///   - Generates nonces for ALL script combinations they participate in
+	///   - Does this for BOTH transactions (A and B)
+	///   - Broadcasts nonces to other signers
+	///
+	/// STEP 2: Nonce Aggregation
+	///   - Once all k signers have shared nonces, nonce aggregation happens
+	///   - This must complete before ANY signer can create partial signatures
+	///   - Creates aggregated nonce for BOTH transactions
+	///
+	/// STEP 3: Signers Create Partial Signatures
+	///   - Each signer creates partial signatures for their applicable scripts
+	///   - Signs BOTH transactions (A and B)
+	///   - As more signers add signatures, viable script combinations narrow down
+	///   - This happens progressively for BOTH transactions in parallel
+	///
+	/// STEP 4: Final (kth) Signer
+	///   - Completes partial signatures for BOTH transactions
+	///   - Now has TWO fully-signed, valid transactions:
+	///     * Transaction A: lower fee (base vsize)
+	///     * Transaction B: higher fee (buffered vsize)
+	///   - Examines current network conditions (mempool, fee rates)
+	///   - CHOOSES which transaction to broadcast:
+	///     * If network is calm: broadcast Transaction A (save money)
+	///     * If network is congested: broadcast Transaction B (ensure confirmation)
+	///
+	/// KEY DIFFERENCES FROM DelegatedMultiSig:
+	/// ----------------------------------------
+	/// 1. Uses MuSig2 (interactive Schnorr signature aggregation)
+	/// 2. Requires nonce exchange phase before signing
+	/// 3. Produces single aggregated signature (more compact)
+	/// 4. All k signers MUST participate (no subset selection)
+	///
+	/// KEY BENEFITS:
+	/// -------------
+	/// 1. Accurate fee estimation - based on actual signing combination
+	/// 2. Flexible fee strategy - final signer has real-time decision power
+	/// 3. No risk of underpayment - buffered transaction always available
+	/// 4. Compact signatures - MuSig2 produces single 64-byte signature
+	/// 5. Interactive security - MuSig2 provides strong security guarantees
+	///
+	/// USAGE EXAMPLE:
+	/// --------------
+	/// // Setup: 3-of-5 multisig, 15% buffer
+	/// var multiSig = new DelegatedMultiSig2(ownerPubKey, signerPubKeys, 3, network);
+	///
+	/// // Calculate which k signers will participate (e.g., signers 0, 2, 4)
+	/// var participatingKeys = new[] { key0, key2, key4 };
+	///
+	/// // Create TWO transactions with different fees
+	/// var (txBase, txBuffered) = CreateDualTransactions(multiSig, input, output, feeRate, bufferPct);
+	///
+	/// // Create builders for BOTH
+	/// var builderA = multiSig.CreateSignatureBuilder(txBase, coins);
+	/// var builderB = multiSig.CreateSignatureBuilder(txBuffered, coins);
+	///
+	/// // Phase 1: All signers exchange nonces for BOTH transactions
+	/// var noncesA_0 = builderA.GenerateNonce(key0, 0);
+	/// var noncesB_0 = builderB.GenerateNonce(key0, 0);
+	/// // ... collect nonces from all participants for both transactions
+	///
+	/// // Phase 2: All signers create partial signatures for BOTH
+	/// builderA.SignWithSigner(key0, 0);
+	/// builderB.SignWithSigner(key0, 0);
+	/// // ... collect signatures from all participants
+	///
+	/// // Phase 3: Final signer chooses which to broadcast
+	/// var finalTxA = builderA.FinalizeTransaction(0); // Base fee
+	/// var finalTxB = builderB.FinalizeTransaction(0); // Buffered fee
+	///
+	/// // Choose based on network conditions
+	/// var chosenTx = IsNetworkCongested() ? finalTxB : finalTxA;
+	/// rpc.SendRawTransaction(chosenTx);
+	/// </summary>
 	public class DelegatedMultiSig2
 	{
 		private readonly PubKey _ownerPubKey;
@@ -232,6 +335,99 @@ namespace NBitcoin
 			return new MuSig2SignatureBuilder(this, transaction, spentCoins, isDynamicFeeMode);
 		}
 
+		/// <summary>
+		/// Creates a pair of transactions (base and buffered) for the dual-transaction signing workflow.
+		/// This allows all k signers to sign both versions and the final signer to choose which to broadcast.
+		/// </summary>
+		/// <param name="coin">The input coin to spend</param>
+		/// <param name="paymentAddress">The destination address for the payment</param>
+		/// <param name="paymentAmount">The amount to send to the payment address</param>
+		/// <param name="changeAddress">The address to receive change</param>
+		/// <param name="feeRate">The fee rate (satoshis per vbyte)</param>
+		/// <param name="signerIndices">The indices of the k signers who will participate (must be exactly k signers)</param>
+		/// <param name="bufferPercentage">Buffer percentage for the buffered transaction (e.g., 15.0 for 15%)</param>
+		/// <returns>A tuple containing (baseTransaction, bufferedTransaction)</returns>
+		public (Transaction baseTx, Transaction bufferedTx) CreateDualTransactions(
+			ICoin coin,
+			IDestination paymentAddress,
+			Money paymentAmount,
+			IDestination changeAddress,
+			FeeRate feeRate,
+			int[] signerIndices,
+			double bufferPercentage = 15.0)
+		{
+			if (coin == null)
+				throw new ArgumentNullException(nameof(coin));
+			if (paymentAddress == null)
+				throw new ArgumentNullException(nameof(paymentAddress));
+			if (changeAddress == null)
+				throw new ArgumentNullException(nameof(changeAddress));
+			if (feeRate == null)
+				throw new ArgumentNullException(nameof(feeRate));
+			if (signerIndices == null || signerIndices.Length != _requiredSignatures)
+				throw new ArgumentException($"Must provide exactly {_requiredSignatures} signer indices for MuSig2");
+			if (bufferPercentage < 0 || bufferPercentage > 100)
+				throw new ArgumentOutOfRangeException(nameof(bufferPercentage), "Buffer percentage must be between 0 and 100");
+
+			// Find the script for the given signers (in MuSig2, all k signers must participate)
+			int targetScriptIndex = -1;
+			var signerSet = signerIndices.OrderBy(x => x).ToArray();
+
+			for (int scriptIndex = 0; scriptIndex < _scripts.Count; scriptIndex++)
+			{
+				var script = _scripts[scriptIndex];
+				var scriptSignerIndices = _scriptToSignerIndices[script.LeafHash.ToString()].OrderBy(x => x).ToArray();
+
+				// Check if this script matches the provided signers exactly
+				if (scriptSignerIndices.SequenceEqual(signerSet))
+				{
+					targetScriptIndex = scriptIndex;
+					break;
+				}
+			}
+
+			if (targetScriptIndex == -1)
+				throw new ArgumentException("No valid script found for the specified signers");
+
+			// Create a temporary transaction to estimate size
+			var tempTx = _network.CreateTransaction();
+			tempTx.Inputs.Add(new OutPoint(coin.Outpoint.Hash, coin.Outpoint.N));
+			tempTx.Outputs.Add(paymentAmount, paymentAddress);
+			tempTx.Outputs.Add(Money.Zero, changeAddress); // Placeholder
+
+			var tempBuilder = CreateSignatureBuilder(tempTx, new[] { coin });
+			var estimate = tempBuilder.GetSizeEstimate(0);
+			var baseVSize = estimate.ScriptSpendVirtualSizes[targetScriptIndex];
+
+			// Calculate fees
+			var baseFee = feeRate.GetFee(baseVSize);
+			var bufferedVSize = (int)(baseVSize * (1.0 + bufferPercentage / 100.0));
+			var bufferedFee = feeRate.GetFee(bufferedVSize);
+
+			// Calculate change amounts
+			var baseChange = (Money)coin.Amount - paymentAmount - baseFee;
+			var bufferedChange = (Money)coin.Amount - paymentAmount - bufferedFee;
+
+			if (baseChange < Money.Zero)
+				throw new InvalidOperationException("Insufficient funds for base transaction");
+			if (bufferedChange < Money.Zero)
+				throw new InvalidOperationException("Insufficient funds for buffered transaction");
+
+			// Create base transaction
+			var baseTx = _network.CreateTransaction();
+			baseTx.Inputs.Add(new OutPoint(coin.Outpoint.Hash, coin.Outpoint.N));
+			baseTx.Outputs.Add(paymentAmount, paymentAddress);
+			baseTx.Outputs.Add(baseChange, changeAddress);
+
+			// Create buffered transaction
+			var bufferedTx = _network.CreateTransaction();
+			bufferedTx.Inputs.Add(new OutPoint(coin.Outpoint.Hash, coin.Outpoint.N));
+			bufferedTx.Outputs.Add(paymentAmount, paymentAddress);
+			bufferedTx.Outputs.Add(bufferedChange, changeAddress);
+
+			return (baseTx, bufferedTx);
+		}
+
 		public class TransactionSizeEstimate
 		{
 			public int KeySpendSize { get; set; }
@@ -350,6 +546,116 @@ namespace NBitcoin
 
 				return result;
 			}
+		}
+
+		/// <summary>
+		/// In-memory session manager for MuSig2 signing.
+		/// Provides isolation between concurrent signing sessions and prevents nonce reuse.
+		/// All state is lost on application restart (by design).
+		/// </summary>
+		private static class MuSig2SessionManager
+		{
+			private static readonly object _lock = new object();
+			private static readonly Dictionary<string, MuSig2SessionState> _sessions = new Dictionary<string, MuSig2SessionState>();
+			private static readonly TimeSpan _sessionTimeout = TimeSpan.FromHours(1);
+
+			public static string CreateSession(DelegatedMultiSig2 multiSig, Transaction transaction, ICoin[] spentCoins)
+			{
+				lock (_lock)
+				{
+					var sessionId = Guid.NewGuid().ToString();
+					var state = new MuSig2SessionState
+					{
+						SessionId = sessionId,
+						MultiSig = multiSig,
+						Transaction = transaction,
+						SpentCoins = spentCoins,
+						Created = DateTime.UtcNow,
+						LastAccessed = DateTime.UtcNow,
+						NonceExchanges = new Dictionary<int, Dictionary<int, MuSig2NonceExchange>>(),
+						PrivateNonces = new Dictionary<int, Dictionary<int, MusigPrivNonce>>(),
+						PartialSignatures = new Dictionary<int, Dictionary<int, MusigPartialSignature>>(),
+						SigHashUsed = new Dictionary<int, TaprootSigHash>()
+					};
+					_sessions[sessionId] = state;
+					CleanupExpiredSessions();
+					return sessionId;
+				}
+			}
+
+			public static MuSig2SessionState GetSession(string sessionId)
+			{
+				lock (_lock)
+				{
+					if (!_sessions.TryGetValue(sessionId, out var state))
+						throw new InvalidOperationException($"Session {sessionId} not found or expired");
+
+					if (DateTime.UtcNow - state.LastAccessed > _sessionTimeout)
+					{
+						_sessions.Remove(sessionId);
+						throw new InvalidOperationException($"Session {sessionId} has expired");
+					}
+
+					state.LastAccessed = DateTime.UtcNow;
+					return state;
+				}
+			}
+
+			public static void CloseSession(string sessionId)
+			{
+				lock (_lock)
+				{
+					if (_sessions.TryGetValue(sessionId, out var state))
+					{
+						// Dispose all private nonces
+						foreach (var inputNonces in state.PrivateNonces.Values)
+						{
+							foreach (var nonce in inputNonces.Values)
+							{
+								nonce?.Dispose();
+							}
+						}
+						_sessions.Remove(sessionId);
+					}
+				}
+			}
+
+			private static void CleanupExpiredSessions()
+			{
+				var now = DateTime.UtcNow;
+				var expiredSessions = _sessions
+					.Where(kvp => now - kvp.Value.LastAccessed > _sessionTimeout)
+					.Select(kvp => kvp.Key)
+					.ToList();
+
+				foreach (var sessionId in expiredSessions)
+				{
+					CloseSession(sessionId);
+				}
+			}
+
+			public static int GetActiveSessionCount()
+			{
+				lock (_lock)
+				{
+					CleanupExpiredSessions();
+					return _sessions.Count;
+				}
+			}
+		}
+
+		private class MuSig2SessionState
+		{
+			public string SessionId { get; set; }
+			public DelegatedMultiSig2 MultiSig { get; set; }
+			public Transaction Transaction { get; set; }
+			public ICoin[] SpentCoins { get; set; }
+			public DateTime Created { get; set; }
+			public DateTime LastAccessed { get; set; }
+			public Dictionary<int, Dictionary<int, MuSig2NonceExchange>> NonceExchanges { get; set; }
+			public Dictionary<int, Dictionary<int, MusigPrivNonce>> PrivateNonces { get; set; }
+			public Dictionary<int, Dictionary<int, MusigPartialSignature>> PartialSignatures { get; set; }
+			public Dictionary<int, TaprootSigHash> SigHashUsed { get; set; }
 		}
 
 		public class MuSig2SignatureBuilder
