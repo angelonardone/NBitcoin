@@ -11,7 +11,7 @@ using static NBitcoin.WalletPolicies.MiniscriptNode;
 
 namespace NBitcoin.WalletPolicies.Visitors;
 
-internal class DeriveVisitor(AddressIntent Intent, int[] Indexes, KeyType KeyType) : MiniscriptRewriterVisitor
+internal class DeriveVisitor(AddressIntent Intent, int[] Indexes, DerivationCache DerivationCache, KeyType KeyType) : MiniscriptRewriterVisitor
 {
 	Dictionary<MiniscriptNode.MultipathNode, BitcoinExtPubKey[]> _Replacements = new();
 	int idx = -1;
@@ -21,10 +21,9 @@ internal class DeriveVisitor(AddressIntent Intent, int[] Indexes, KeyType KeyTyp
 		DerivationResult[] result = new DerivationResult[Indexes.Length];
 		Parallel.For(0, Indexes.Length, i =>
 		{
-			var visitor = new DeriveVisitor(Intent, Indexes, KeyType)
+			var visitor = new DeriveVisitor(Intent, Indexes, DerivationCache, KeyType)
 			{
-				idx = Indexes[i],
-				_DerivedCache = _DerivedCache,
+				idx = Indexes[i]
 			};
 			var miniscript = new Miniscript(visitor.Visit(node), network, KeyType);
 			result[i] = new DerivationResult(miniscript, visitor._Derivations);
@@ -33,8 +32,22 @@ internal class DeriveVisitor(AddressIntent Intent, int[] Indexes, KeyType KeyTyp
 	}
 
 	internal static readonly byte[] BIP0328CC = Encoders.Hex.DecodeData("868087ca02a6f974c4598924c36b57762d32cb45717167e300622c7167e38965");
+	Stack<TaprootBranchNode> _TaprootBranches = new();
+	TaprootBranchNode? TaprootBranch => _TaprootBranches.Count > 0 ? _TaprootBranches.Peek() : null;
 	public override MiniscriptNode Visit(MiniscriptNode node)
 	{
+		if (node is TaprootBranchNode b)
+		{
+			_TaprootBranches.Push(b);
+			try
+			{
+				return base.Visit(b);
+			}
+			finally
+			{
+				_TaprootBranches.Pop();
+			}
+		}
 		if (node is MultipathNode { Target: MusigNode })
 		{
 			var wasNestedMusig = _nestedMusig;
@@ -54,10 +67,10 @@ internal class DeriveVisitor(AddressIntent Intent, int[] Indexes, KeyType KeyTyp
 		}
 		if (node is MiniscriptNode.MultipathNode mki && mki.CanDerive(Intent))
 		{
-			if (mki.Target is HDKeyNode { Key: var pk } xpub)
+			if (mki.Target is HDKeyNode xpub)
 			{
-				var value = GetPublicKey(mki, pk);
-				_Derivations.TryAdd(xpub, value);
+				var value = GetPublicKey(mki, xpub.Key, xpub);
+				_Derivations.Add(new(value.KeyPath, value.Pubkey, TaprootBranch, xpub));
 				node = value.Pubkey;
 			}
 			else if (mki.Target is MusigNode musig)
@@ -70,27 +83,28 @@ internal class DeriveVisitor(AddressIntent Intent, int[] Indexes, KeyType KeyTyp
 		return node;
 	}
 
-	private Derivation GetPublicKey(MiniscriptNode.MultipathNode mki, IHDKey k)
+	private (KeyPath KeyPath, Value Pubkey) GetPublicKey(MiniscriptNode.MultipathNode mki, IHDKey k, HDKeyNode? source = null)
 	{
 		var type = mki.GetTypeIndex(Intent);
-		k = DeriveIntent(k, type);
-		k = k.Derive((uint)idx);
+		k = DeriveIntent(k, type) ?? throw new InvalidOperationException($"Unable to derive the key for {type}");
+		k = k.Derive((uint)idx) ?? throw new InvalidOperationException($"Unable to derive the key for {type}:{idx}");
 		var keyType = _nestedMusig ? KeyType.Classic : KeyType;
-		return new Derivation(new KeyPath([(uint)type, (uint)idx]), keyType switch
-		{
-			KeyType.Taproot => MiniscriptNode.Create(k.GetPublicKey().TaprootPubKey),
-			_ => MiniscriptNode.Create(k.GetPublicKey())
-		});
+		return (
+			new KeyPath([(uint)type, (uint)idx]),
+			keyType switch
+			{
+				KeyType.Taproot => MiniscriptNode.Create(k.GetPublicKey().TaprootPubKey),
+				_ => MiniscriptNode.Create(k.GetPublicKey())
+			});
 	}
-	Dictionary<HDKeyNode, Derivation> _Derivations = new();
-	ConcurrentDictionary<(IHDKey, int), Lazy<IHDKey>> _DerivedCache = new();
+	List<Derivation> _Derivations = new();
 
 	public bool _nestedMusig = false;
 
-	private IHDKey DeriveIntent(IHDKey k, int typeIndex)
+	private IHDKey? DeriveIntent(IHDKey k, int typeIndex)
 	{
 		// When we derive 0/1/*, "0/1" is common to multiple derivations, so we cache it
-		return _DerivedCache.GetOrAdd((k, typeIndex), new Lazy<IHDKey>(() => k.Derive((uint)typeIndex))).Value;
+		return DerivationCache.GetOrAdd((k, typeIndex), new Lazy<IHDKey?>(() => k.Derive((uint)typeIndex))).Value;
 	}
 }
 #endif

@@ -117,6 +117,9 @@ namespace NBitcoin.Tests
 					}
 				}
 			});
+
+			settings = new MiniscriptParsingSettings(Network.Main) { Dialect = MiniscriptDialect.BIP388, AllowedParameters = ParameterTypeFlags.NamedParameter };
+			Miniscript.Parse("tr(musig(xpub661MyMwAqRbcFqyJE6zy5jMF7bjUtvNHgHJPbENEZtEQKRrukKWJP5xLMKntBaNya7CLMLL6u1KEk8GnrEv8pur5DFSgEMf1hRGjsJrcQKS), { pkh([aaaaaaaa]xpub661MyMwAqRbcFiadHioAunPTeic3C17HKPABCBvURz3W2ivn63jzEYYXWpDePLGncjLuRvQKx7jrKweSkoEvgQTvAo5zw4z8HPGC8Y4E4Wr/**), pkh([aaaaaaaa]xpub661MyMwAqRbcFqyJE6zy5jMF7bjUtvNHgHJPbENEZtEQKRrukKWJP5xLMKntBaNya7CLMLL6u1KEk8GnrEv8pur5DFSgEMf1hRGjsJrcQKS/**) })", settings);
 		}
 		[Fact]
 		public void CanGenerateTrScript()
@@ -524,7 +527,7 @@ namespace NBitcoin.Tests
 			var expected = $"multi(2,{a},{b},{c})";
 			Assert.Equal(expected, derived.ToString());
 
-			var derivedKey = allMiniscripts[3].DerivedKeys[keys[0]];
+			var derivedKey = allMiniscripts[3].DerivedKeys[0];
 			Assert.Equal(new KeyPath($"{typeIdx[0]}/{15 + 3}"), derivedKey.KeyPath);
 			Assert.Equal(a, ((Value.PubKeyValue)derivedKey.Pubkey).PubKey);
 		}

@@ -504,19 +504,19 @@ namespace NBitcoin
 		{
 			TrySign(accountHDScriptPubKey, accountKey, accountKeyPath, null);
 		}
-		internal void TrySign(IHDScriptPubKey accountHDScriptPubKey, IHDKey accountKey, RootedKeyPath? accountKeyPath, SigningOptions? signingOptions)
+		internal void TrySign(IHDScriptPubKey? accountHDScriptPubKey, IHDKey accountKey, RootedKeyPath? accountKeyPath, SigningOptions? signingOptions)
 		{
 			if (accountKey == null)
 				throw new ArgumentNullException(nameof(accountKey));
-			if (accountHDScriptPubKey == null)
-				throw new ArgumentNullException(nameof(accountHDScriptPubKey));
 			if (IsFinalized())
 				return;
 			var cache = accountKey.AsHDKeyCache();
-			accountHDScriptPubKey = accountHDScriptPubKey.AsHDKeyCache();
 			foreach (var hdk in this.HDKeysFor(accountHDScriptPubKey, cache, accountKeyPath))
 			{
-				if (((HDKeyCache)cache.Derive(hdk.AddressKeyPath)).Inner is ISecret k)
+				var key = cache.Derive(hdk.AddressKeyPath);
+				if (key is null)
+					continue;
+				if (((HDKeyCache)key).Inner is ISecret k)
 					Sign(k.PrivateKey, signingOptions);
 				else
 					throw new ArgumentException(paramName: nameof(accountKey), message: "This should be a private key");
