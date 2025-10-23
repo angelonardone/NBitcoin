@@ -173,7 +173,7 @@ namespace NBitcoin.RPC
 				BestBlockHash = uint256.Parse((string)o["bestblockhash"]),
 				Blocks = (int)o["blocks"],
 				ChainWork = uint256.Parse((string)o["chainwork"]),
-				Difficulty = (int)o["difficulty"],
+				Difficulty = (ulong)o["difficulty"],
 				Headers = (int)o["headers"],
 				VerificationProgress = (decimal)o["verificationprogress"],
 				IsPruned = (bool)o["pruned"]
@@ -200,6 +200,18 @@ namespace NBitcoin.RPC
 			var stream = new BitcoinStream(mem, false);
 			stream.ReadWrite(utxos);
 			return utxos;
+		}
+
+		/// <summary>
+		/// Gets the block hash by height.
+		/// </summary>
+		/// <param name="height">The block height.</param>
+		/// <returns>The block hash at the specified height.</returns>		
+		public async Task<uint256> GetBlockHashByHeightAsync(int height)
+		{
+			var result = await SendRequestAsync("blockhashbyheight", RestResponseFormat.Json, height.ToString()).ConfigureAwait(false);
+			var o = JObject.Parse(Encoding.UTF8.GetString(result, 0, result.Length));
+			return uint256.Parse((string)o["blockhash"]);			
 		}
 
 		public async Task<byte[]> SendRequestAsync(string resource, RestResponseFormat format, params string[] parms)
@@ -289,7 +301,7 @@ namespace NBitcoin.RPC
 			get;
 			internal set;
 		}
-		public int Difficulty
+		public ulong Difficulty
 		{
 			get;
 			internal set;
