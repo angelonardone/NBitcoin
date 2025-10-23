@@ -138,7 +138,7 @@ namespace NBitcoin
 				throw new ArgumentNullException(nameof(network));
 
 			_ownerPubKey = ownerPubKey;
-			_signerPubKeys = signerPubKeys;
+			_signerPubKeys = signerPubKeys.OrderBy(p => p.ToHex()).ToList();
 			_requiredSignatures = requiredSignatures;
 			_network = network;
 			_scripts = new List<TapScript>();
