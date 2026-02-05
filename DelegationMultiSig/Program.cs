@@ -450,21 +450,42 @@ namespace NBitcoinTraining
 				TaprootExecutionData extectionData;
 
 
-				Boolean useKeySpend = false;
+				Boolean useKeySpend = true;
 				if (useKeySpend)
 				{
 					// ADDRESS PATH
-
+					// Owner signs via key path
+					Console.WriteLine("🔑 Owner signing via key path...");
+					var ownerBuilder = multiSig.CreateSignatureBuilder(spender, all_coins.ToArray());
+					Transaction finalTx = null;
 					for (int i = 0; i < spender.Inputs.Count; i++)
 					{
 
-						extectionData = new TaprootExecutionData(0) { SigHash = sighash };
-						var hash = spender.GetSignatureHashTaproot(spentOutputsIn, extectionData);
-						var sig = keySpend.SignTaprootKeySpend(hash, allTreeInfoArray[i].MerkleRoot, sighash);
-						Console.WriteLine($"Signature {sig.ToString()}");
-						Console.WriteLine($"Signature Size: {sig.ToBytes().Length}");
-						spender.Inputs[i].WitScript = new NBitcoin.WitScript(NBitcoin.Op.GetPushOp(sig.ToBytes()));
+						//extectionData = new TaprootExecutionData(0) { SigHash = sighash };
+						//var hash = spender.GetSignatureHashTaproot(spentOutputsIn, extectionData);
+						//var sig = keySpend.SignTaprootKeySpend(hash, allTreeInfoArray[i].MerkleRoot, sighash);
+						//Console.WriteLine($"Signature {sig.ToString()}");
+						//Console.WriteLine($"Signature Size: {sig.ToBytes().Length}");
+						//spender.Inputs[i].WitScript = new NBitcoin.WitScript(NBitcoin.Op.GetPushOp(sig.ToBytes()));
+
+						//////////////// NEW DelegatedMultSig
+						var ownerSigData = ownerBuilder.SignWithOwner(keySpend, i);
+						Console.WriteLine($"   ✅ Owner signed (key path - single signature)");
+						Console.WriteLine($"   ✅ Transaction complete!\n");
+						// Finalize owner transaction
+						finalTx = ownerBuilder.FinalizeTransaction(i);
+						//////////////// NEW DelegatedMultSig
 					}
+					Console.WriteLine(finalTx.ToString());
+					var validator = finalTx.CreateValidator(spentOutputsIn);
+					Console.WriteLine("virtual size: " + finalTx.GetVirtualSize());
+					Console.WriteLine("to hex: " + finalTx.ToHex().ToString());
+					var result = validator.ValidateInput(0);
+					var success = result.Error is null;
+					Console.WriteLine("does validate witness? " + success);
+
+
+					rpc.SendRawTransaction(finalTx);
 				}
 				else
 				{
@@ -512,23 +533,35 @@ namespace NBitcoinTraining
 
 
 					}
+
+					Console.WriteLine(spender.ToString());
+					var validator = spender.CreateValidator(spentOutputsIn);
+					Console.WriteLine("virtual size: " + spender.GetVirtualSize());
+					Console.WriteLine("to hex: " + spender.ToHex().ToString());
+					var result = validator.ValidateInput(0);
+					var success = result.Error is null;
+					Console.WriteLine("does validate witness? " + success);
+
+
+					rpc.SendRawTransaction(spender);
+
 				}
 
 
 
-				// COMMON
+				//// COMMON
 
 
-				Console.WriteLine(spender.ToString());
-				var validator = spender.CreateValidator(spentOutputsIn);
-				Console.WriteLine("virtual size: " + spender.GetVirtualSize());
-				Console.WriteLine("to hex: " + spender.ToHex().ToString());
-				var result = validator.ValidateInput(0);
-				var success = result.Error is null;
-				Console.WriteLine("does validate witness? " + success);
+				//Console.WriteLine(spender.ToString());
+				//var validator = spender.CreateValidator(spentOutputsIn);
+				//Console.WriteLine("virtual size: " + spender.GetVirtualSize());
+				//Console.WriteLine("to hex: " + spender.ToHex().ToString());
+				//var result = validator.ValidateInput(0);
+				//var success = result.Error is null;
+				//Console.WriteLine("does validate witness? " + success);
 
 
-				rpc.SendRawTransaction(spender);
+				//rpc.SendRawTransaction(spender);
 
 
 			}

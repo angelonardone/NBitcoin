@@ -39,7 +39,6 @@ namespace DistricutedCryptographyLib
 
 				try
 				{
-					Console.WriteLine("init: " + extPrivKey);
 					using (Aes aes = Aes.Create())
 					{
 						aes.GenerateKey();
