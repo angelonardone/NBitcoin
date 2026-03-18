@@ -9,18 +9,33 @@ namespace DistricutedCryptographyLib
 	public class GroupSDT
 	{
 		public Guid GroupId { get; set; }
-		public short GroupType { get; set; }  // Assuming GroupType, Wallet as numeric
+		public short GroupType { get; set; }
 		public string? GroupName { get; set; }
 		public bool AmIGroupOwner { get; set; }
 		public bool IsActive { get; set; }
-		public short MinimumShares { get; set; }  // Numeric(4.0) -> decimal
+		public short MinimumShares { get; set; }
 		public string? EncPassword { get; set; }
 		public string? ClearTextShare { get; set; }
+		public string? EncryptedTextShare { get; set; }
 		public bool NumOfSharesReached { get; set; }
 		public string? ExtPubKeyMultiSigReceiving { get; set; }
 		public string? ExtPubKeyMultiSigChange { get; set; }
+		public short SubGroupType { get; set; }
+		public Guid BountyGroupId { get; set; }
+		public Guid DataGroupId { get; set; }
+		public string? ExtPubKeyTimeBountyReceiving { get; set; }
+		public List<TimeConstrainItem> TimeConstrain { get; set; } = new List<TimeConstrainItem>();
 		public List<ContactItem> Contact { get; set; } = new List<ContactItem>();
-		public List<OtherGroup> OtherGroup { get; set; } = new List<OtherGroup>();
+		public OtherGroup OtherGroup { get; set; } = new OtherGroup();
+	}
+
+	public class TimeConstrainItem
+	{
+		public int Sequence { get; set; }
+		public string? Address { get; set; }
+		public DateTime Date { get; set; }
+		public string? EncryptedSecret { get; set; }
+		public string? EncryptedKey { get; set; }
 	}
 
 	public class ContactItem
@@ -32,8 +47,8 @@ namespace DistricutedCryptographyLib
 		public string? ContactUserPubKey { get; set; }
 		public string? ContactEncryptedKey { get; set; }
 		public string? ContactEncryptedText { get; set; }
-		public DateTime? ContactInvitationSent { get; set; }
-		public DateTime? ContactInvitationAccepted { get; set; }
+		public DateTime ContactInvitationSent { get; set; }
+		public DateTime ContactInvitationAccepted { get; set; }
 		public bool ContactInvitationDeclined { get; set; }
 		public bool ContactInviSent { get; set; }
 		public bool ContactInvRec { get; set; }
@@ -43,6 +58,7 @@ namespace DistricutedCryptographyLib
 		public bool NumOfSharesReached { get; set; }
 		public string? ExtPubKeyMultiSigReceiving { get; set; }
 		public string? ExtPubKeyMultiSigChange { get; set; }
+		public string? ExtPubKeyTimeBountyReceiving { get; set; }
 		public List<MuSigSignaturesItem> MuSigSignatures { get; set; } = new List<MuSigSignaturesItem>();
 	}
 
@@ -60,5 +76,6 @@ namespace DistricutedCryptographyLib
 		public string? Signature { get; set; }
 		public string? ExtPubKeyMultiSigReceiving { get; set; }
 		public string? ExtPubKeyMultiSigChange { get; set; }
+		public string? ExtPubKeyTimeBountyReceiving { get; set; }
 	}
 }
