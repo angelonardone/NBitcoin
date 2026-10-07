@@ -1,3 +1,4 @@
+#if HAS_SPAN // DelegatedMultiSig / DelegatedMultiSig2 only exist in the HAS_SPAN builds of NBitcoin (not net472)
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -2006,3 +2007,4 @@ namespace NBitcoin.Tests
 #endif
 	}
 }
+#endif
