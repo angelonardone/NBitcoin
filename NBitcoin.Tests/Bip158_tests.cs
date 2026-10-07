@@ -290,10 +290,10 @@ namespace NBitcoin.Tests
 				.SetP(20)
 				.SetM(1U << 20)
 				.SetKey(key)
-				.AddEntries(scripts.Select(x => x.ToCompressedBytes()))
+				.AddEntries(scripts.Select(x => x.ToBytes()))
 				.Build();
 
-			Assert.Equal("017821b8", filter.ToString());
+			Assert.Equal("0114ebc0", filter.ToString());
 			foreach (var tx in block.Transactions)
 			{
 				for (int i = 0; i < tx.Outputs.Count; i++)
@@ -301,7 +301,7 @@ namespace NBitcoin.Tests
 					var output = tx.Outputs[i];
 					if (!output.ScriptPubKey.IsScriptType(ScriptType.P2SH) && output.ScriptPubKey.IsScriptType(ScriptType.Witness))
 					{
-						Assert.True(filter.Match(output.ScriptPubKey.ToCompressedBytes(), testkey));
+						Assert.True(filter.Match(output.ScriptPubKey.ToBytes(), testkey));
 					}
 				}
 			}

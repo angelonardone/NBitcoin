@@ -1,15 +1,11 @@
 ﻿#if !NO_RECORDS
 using NBitcoin.DataEncoders;
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using Xunit;
 using NBitcoin.WalletPolicies;
 using static NBitcoin.WalletPolicies.MiniscriptNode;
-using static NBitcoin.WalletPolicies.Miniscript;
-using NBitcoin.Scripting;
 using Xunit.Abstractions;
-using System.Net;
 using NBitcoin.Secp256k1;
 using NBitcoin.WalletPolicies.Visitors;
 
@@ -73,6 +69,85 @@ namespace NBitcoin.Tests
 			var parsed = Miniscript.Parse(miniscript, new MiniscriptParsingSettings(Network.RegTest, KeyType.Classic) {  AllowedParameters = ParameterTypeFlags.All });
 			var actual = parsed.ToString();
 			Assert.Equal(miniscript, actual);
+		}
+
+		[Theory]
+		// https://github.com/MetacoSA/NBitcoin/issues/1283
+		[InlineData("older(000000002088829000)", false)]
+		[InlineData("older(01)", false)]
+		[InlineData("after(01)", false)]
+		[InlineData("multi(01,A,B)", false)]
+		[InlineData("older(0)", false)]
+		[InlineData("older(1000)", true)]
+		[InlineData("after(1000)", true)]
+		public void RejectsNonCanonicalNumbers(string miniscript, bool expected)
+		{
+			var settings = new MiniscriptParsingSettings(Network.RegTest, KeyType.Classic) { AllowedParameters = ParameterTypeFlags.All };
+			Assert.Equal(expected, Miniscript.TryParse(miniscript, settings, out _));
+		}
+
+		[Theory]
+		[InlineData("older(0)")]
+		[InlineData("older(2147483648)")]
+		public void RejectsInvalidOlderSequence(string miniscript)
+		{
+			var settings = new MiniscriptParsingSettings(Network.RegTest, KeyType.Classic);
+			Assert.False(Miniscript.TryParse(miniscript, settings, out var error, out _));
+			Assert.IsType<MiniscriptError.LocktimeExpected>(error);
+		}
+
+		[Theory]
+		[InlineData("older(1)")]
+		[InlineData("older(65535)")]
+		[InlineData("older(4194304)")]
+		[InlineData("older(4259839)")]
+		[InlineData("older(2147483647)")]
+		public void AcceptsValidOlderSequence(string miniscript)
+		{
+			var settings = new MiniscriptParsingSettings(Network.RegTest, KeyType.Classic);
+			var parsed = Miniscript.Parse(miniscript, settings);
+			Assert.Equal(miniscript, parsed.ToString());
+		}
+
+		[Theory]
+		[InlineData(0U)]
+		[InlineData(0x80000000U)]
+		public void RejectsInvalidOlderSequenceReplacement(uint sequence)
+		{
+			var settings = new MiniscriptParsingSettings(Network.RegTest, KeyType.Classic) { AllowedParameters = ParameterTypeFlags.NamedParameter };
+			var parsed = Miniscript.Parse("older(A)", settings);
+			var exception = Assert.Throws<MiniscriptReplacementException>(() => parsed.ReplaceParameters(new()
+			{
+				["A"] = new MiniscriptNode.Value.LockTimeValue(sequence)
+			}));
+			Assert.IsType<MiniscriptNode.ParameterRequirement.RelativeLocktime>(exception.Requirement);
+		}
+
+		[Theory]
+		[InlineData(1U)]
+		[InlineData(0x00400000U)]
+		[InlineData(0x7fffffffU)]
+		public void AcceptsValidOlderSequenceReplacement(uint sequence)
+		{
+			var settings = new MiniscriptParsingSettings(Network.RegTest, KeyType.Classic) { AllowedParameters = ParameterTypeFlags.NamedParameter };
+			var parsed = Miniscript.Parse("older(A)", settings).ReplaceParameters(new()
+			{
+				["A"] = new MiniscriptNode.Value.LockTimeValue(sequence)
+			});
+			Assert.Equal($"older({sequence})", parsed.ToString());
+		}
+
+		[Theory]
+		[InlineData("thresh(0)", KeyType.Classic)]
+		[InlineData("multi(0)", KeyType.Classic)]
+		[InlineData("sortedmulti(0)", KeyType.Classic)]
+		[InlineData("multi_a(0)", KeyType.Taproot)]
+		[InlineData("sortedmulti_a(0)", KeyType.Taproot)]
+		public void RejectsZeroThreshold(string miniscript, KeyType keyType)
+		{
+			var settings = new MiniscriptParsingSettings(Network.Main, keyType) { AllowedParameters = ParameterTypeFlags.All };
+			Assert.False(Miniscript.TryParse(miniscript, settings, out var error, out _));
+			Assert.IsType<MiniscriptError.CountExpected>(error);
 		}
 
 		[Theory]
@@ -227,6 +302,78 @@ namespace NBitcoin.Tests
 		}
 
 		[Fact]
+		public void ParseRejectsDeeplyNestedMiniscript()
+		{
+			var miniscript = "0";
+			for (var i = 0; i < 200; i++)
+				miniscript = $"t:or_i(v:and_v(vdv:after(1),{miniscript}),v:ripemd160(8d33f520a3c4cef80d2453aef81b612bfe1cb44c))";
+
+			var settings = new MiniscriptParsingSettings(Network.Main, KeyType.Classic)
+			{
+				Dialect = MiniscriptDialect.Strict
+			};
+			Assert.False(Miniscript.TryParse(miniscript, settings, out var error, out _));
+			Assert.IsType<MiniscriptError.TooDeep>(error);
+
+			var ex = Assert.Throws<MiniscriptFormatException>(() => Miniscript.Parse(miniscript, settings));
+			Assert.IsType<MiniscriptError.TooDeep>(ex.Error);
+		}
+
+		[Theory]
+		[InlineData(100, true)]
+		[InlineData(101, false)]
+		public void WrapperNestingIsBounded(int depth, bool expected)
+		{
+			var miniscript = $"{new string('n', depth)}:0";
+			var settings = new MiniscriptParsingSettings(Network.Main, KeyType.Classic)
+			{
+				Dialect = MiniscriptDialect.Strict
+			};
+
+			var parsed = Miniscript.TryParse(miniscript, settings, out var error, out _);
+
+			Assert.Equal(expected, parsed);
+			if (!expected)
+				Assert.IsType<MiniscriptError.TooDeep>(error);
+		}
+
+		[Fact]
+		public void CombinedExpressionAndWrapperNestingIsBounded()
+		{
+			var miniscript = $"{new string('n', 51)}:0";
+			for (var i = 0; i < 50; i++)
+				miniscript = $"and_v(v:1,{miniscript})";
+			var settings = new MiniscriptParsingSettings(Network.Main, KeyType.Classic)
+			{
+				Dialect = MiniscriptDialect.Strict
+			};
+
+			Assert.False(Miniscript.TryParse(miniscript, settings, out var error, out _));
+			Assert.IsType<MiniscriptError.TooDeep>(error);
+		}
+
+		[Theory]
+		[InlineData(98, true)]
+		[InlineData(200, false)]
+		public void TaprootTreeNestingIsBounded(int depth, bool expected)
+		{
+			var tree = "pk(A)";
+			for (var i = 0; i < depth; i++)
+				tree = $"{{{tree},pk(A)}}";
+
+			var settings = new MiniscriptParsingSettings(Network.RegTest)
+			{
+				Dialect = MiniscriptDialect.BIP388,
+				AllowedParameters = ParameterTypeFlags.NamedParameter
+			};
+			var parsed = Miniscript.TryParse($"tr(A,{tree})", settings, out var error, out _);
+
+			Assert.Equal(expected, parsed);
+			if (!expected)
+				Assert.IsType<MiniscriptError.TooDeep>(error);
+		}
+
+		[Fact]
 		public void CanGenerateScripts()
 		{
 			var settings = new MiniscriptParsingSettings(Network.RegTest)
@@ -270,6 +417,37 @@ namespace NBitcoin.Tests
 			// This check coherency
 			var scriptCoin = new ScriptCoin(OutPoint.Zero, new TxOut(Money.Zero, expectedScriptPubKey), expectedRedeem);
 			Assert.Equal(scriptCoin.GetScriptCode(), expectedScriptCode);
+		}
+
+		[Theory]
+		[InlineData("pkh({key})")]
+		[InlineData("wpkh({key})")]
+		[InlineData("sh(wpkh({key}))")]
+		[InlineData("wsh(pkh({key}))")]
+		[InlineData("wsh(multi(1,{key},03a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd))")]
+		[InlineData("wsh(sortedmulti(1,{key},03a34b99f22c790c4e36b2b3c2c35a36db06226e41c692fc82b8b56ac1c540c5bd))")]
+		public void CannotGenerateScriptsFromRootedHDKeyWithoutMultiPath(string descriptorTemplate)
+		{
+			const string rootedHDKey = "[aaaaaaaa/44h/1h/0h]tpubDDV486pBqkML6Ywhznz8DS3VS95h3q4A2pUMCc6yy739QpKMg3gA8EXGrjraDBDxrhLsezepjCEfBtak5wngDH4vMh6aXKV8hPN7JsMtdEf";
+			var descriptor = descriptorTemplate.Replace("{key}", rootedHDKey);
+			var miniscript = Miniscript.Parse(descriptor, new MiniscriptParsingSettings(Network.RegTest) { Dialect = MiniscriptDialect.BIP388 });
+
+			Assert.Equal(descriptor.Replace("/44h/1h/0h", "/44'/1'/0'"), miniscript.ToString());
+			var exception = Assert.Throws<InvalidOperationException>(() => miniscript.ToScripts());
+			Assert.Contains("multipath derivation", exception.Message);
+			Assert.DoesNotContain("Expected 1 parameters", exception.Message);
+		}
+
+		[Fact]
+		public void CannotGenerateScriptsFromUnderivedMultiPathHDKey()
+		{
+			var miniscript = Miniscript.Parse(
+				"pkh([aaaaaaaa/44h/1h/0h]tpubDDV486pBqkML6Ywhznz8DS3VS95h3q4A2pUMCc6yy739QpKMg3gA8EXGrjraDBDxrhLsezepjCEfBtak5wngDH4vMh6aXKV8hPN7JsMtdEf/<0;1>/*)",
+				new MiniscriptParsingSettings(Network.RegTest) { Dialect = MiniscriptDialect.BIP388 });
+
+			var exception = Assert.Throws<InvalidOperationException>(() => miniscript.ToScripts());
+			Assert.Contains("Call Derive(...)", exception.Message);
+			Assert.DoesNotContain("Expected 1 parameters", exception.Message);
 		}
 
 		[Fact]
@@ -334,6 +512,29 @@ namespace NBitcoin.Tests
 			var parsed = Miniscript.Parse(miniscript, new MiniscriptParsingSettings(Network.Main, KeyType.Classic) { AllowedParameters = ParameterTypeFlags.All });
 			Assert.Equal(miniscript, parsed.ToString()); // Sanity check
 			Assert.Equal(expected, parsed.ToScriptCodeString());
+		}
+
+		[Theory]
+		[InlineData("multi")]
+		[InlineData("sortedmulti")]
+		public void RejectsCheckMultiSigWithMoreThanTwentyKeys(string fragment)
+		{
+			var settings = new MiniscriptParsingSettings(Network.Main, KeyType.Classic)
+			{
+				Dialect = MiniscriptDialect.Strict,
+				AllowedParameters = ParameterTypeFlags.All
+			};
+			var valid = $"{fragment}(2,{string.Join(",", GeneratePubKeys(20))})";
+			var invalid = $"{fragment}(2,{string.Join(",", GeneratePubKeys(21))})";
+
+			var parsed = Miniscript.Parse(valid, settings);
+			Assert.Equal(valid, parsed.ToString());
+			parsed.ToScripts();
+
+			Assert.False(Miniscript.TryParse(invalid, settings, out var error, out _));
+			Assert.IsType<MiniscriptError.TooManyKeys>(error);
+			var exception = Assert.Throws<MiniscriptFormatException>(() => Miniscript.Parse(invalid, settings));
+			Assert.IsType<MiniscriptError.TooManyKeys>(exception.Error);
 		}
 
 		[Fact]
@@ -538,6 +739,16 @@ namespace NBitcoin.Tests
 			{
 				var root = new ExtKey().GetWif(Network.RegTest);
 				return new HDKeyNode(new KeyPath("48'/1'/0'").ToRootedKeyPath(root.ExtKey), root.Neuter());
+			}).ToArray();
+		}
+
+		private static string[] GeneratePubKeys(int count)
+		{
+			return Enumerable.Range(1, count).Select(i =>
+			{
+				var data = new byte[32];
+				data[31] = (byte)i;
+				return new Key(data).PubKey.ToHex();
 			}).ToArray();
 		}
 

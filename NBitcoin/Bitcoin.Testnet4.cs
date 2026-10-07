@@ -65,6 +65,7 @@ namespace NBitcoin
 				SupportTaproot = true,
 				SupportSegwit = true,
 				CoinType = 1,
+				EnforceBIP94 = true, // Testnet4 a different difficulty adjustment rule
 			};
 
 			// Modify the testnet genesis block so the timestamp is valid for a later start.
@@ -80,8 +81,6 @@ namespace NBitcoin
 
 			builder.SetConsensus(consensus);
 
-
-#if !NOSOCKET
 			builder.AddDNSSeeds(new[]
 			{
 				new DNSSeedData("bitcoin.sprovoost.nl", "seed.testnet4.bitcoin.sprovoost.nl"),
@@ -101,7 +100,6 @@ namespace NBitcoin
 			};
 
 			builder.AddSeeds(LoadNetworkAddresses(pnSeed6_test,  builder));
-#endif
 
 			var result = builder.BuildAndRegister();
 

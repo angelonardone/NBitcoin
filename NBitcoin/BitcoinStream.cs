@@ -4,9 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-#if !NOSOCKET
 using System.Net.Sockets;
-#endif
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -54,6 +52,7 @@ namespace NBitcoin
 	}
 	public partial class BitcoinStream
 	{
+		const int MaxInitialListCapacity = 1024;
 		int _MaxArraySize = 1024 * 1024 * 4;
 		public int MaxArraySize
 		{
@@ -81,9 +80,7 @@ namespace NBitcoin
 			.First();
 		}
 
-#if !NOSOCKET
 		private readonly bool _IsNetworkStream;
-#endif
 		private readonly Stream _Inner;
 		public Stream Inner
 		{
@@ -104,9 +101,7 @@ namespace NBitcoin
 		public BitcoinStream(Stream inner, bool serializing)
 		{
 			_Serializing = serializing;
-#if !NOSOCKET
 			_IsNetworkStream = inner is NetworkStream;
-#endif
 			_Inner = inner;
 		}
 
@@ -266,7 +261,7 @@ namespace NBitcoin
 				if (len > (uint)MaxArraySize)
 					throw new ArgumentOutOfRangeException("Array size too big");
 				listLen = (int)len;
-				list = new List<T>(listLen);
+				list = new List<T>(Math.Min(listLen, MaxInitialListCapacity));
 				for (int i = 0; i < listLen; i++)
 				{
 					T obj = default;
@@ -298,7 +293,7 @@ namespace NBitcoin
 				if (len > (uint)MaxArraySize)
 					throw new ArgumentOutOfRangeException("Array size too big");
 				listLen = (int)len;
-				list = new TxInList(listLen);
+				list = new TxInList(Math.Min(listLen, MaxInitialListCapacity));
 				for (int i = 0; i < listLen; i++)
 				{
 					TxIn obj = default;
@@ -330,7 +325,7 @@ namespace NBitcoin
 				if (len > (uint)MaxArraySize)
 					throw new ArgumentOutOfRangeException("Array size too big");
 				listLen = (int)len;
-				list = new TxOutList(listLen);
+				list = new TxOutList(Math.Min(listLen, MaxInitialListCapacity));
 				for (int i = 0; i < listLen; i++)
 				{
 					TxOut obj = default;

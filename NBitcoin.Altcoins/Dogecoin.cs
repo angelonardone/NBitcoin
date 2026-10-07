@@ -30,13 +30,14 @@ namespace NBitcoin.Altcoins
 			}
 			public static DogeConsensusFactory Instance { get; } = new DogeConsensusFactory();
 
-			public override BlockHeader CreateBlockHeader()
+			public override Payload CreatePayload(string command)
 			{
-				return new DogecoinBlockHeader();
+				return command == "headers" ? new DogecoinHeadersPayload() : base.CreatePayload(command);
 			}
+
 			public override Block CreateBlock()
 			{
-				return new DogecoinBlock(new DogecoinBlockHeader());
+				return new DogecoinBlock(this.CreateBlockHeader());
 			}
 			public override Transaction CreateTransaction()
 			{
@@ -168,7 +169,20 @@ namespace NBitcoin.Altcoins
 
 			public void ReadWrite(BitcoinStream stream)
 			{
-				stream.ReadWrite(ref tx);
+				var transactionOptions = stream.TransactionOptions;
+				var supportWitness = stream.ProtocolCapabilities.SupportWitness;
+				try
+				{
+					// The parent chain may use SegWit even though Dogecoin does not.
+					stream.TransactionOptions |= TransactionOptions.Witness;
+					stream.ProtocolCapabilities.SupportWitness = true;
+					stream.ReadWrite(ref tx);
+				}
+				finally
+				{
+					stream.TransactionOptions = transactionOptions;
+					stream.ProtocolCapabilities.SupportWitness = supportWitness;
+				}
 				stream.ReadWrite(ref hashBlock);
 				stream.ReadWrite(ref vMerkelBranch);
 				stream.ReadWrite(ref nIndex);
@@ -198,19 +212,10 @@ namespace NBitcoin.Altcoins
 		}
 		public class DogecoinBlock : Block
 		{
-			public DogecoinBlock(DogecoinBlockHeader header) : base(header)
+			public DogecoinBlock(BlockHeader header) : base(header)
 			{
 
 			}
-
-			public override ConsensusFactory GetConsensusFactory()
-			{
-				return DogeConsensusFactory.Instance;
-			}
-		}
-		public class DogecoinBlockHeader : BlockHeader
-		{
-			const int VERSION_AUXPOW = (1 << 8);
 
 			AuxPow auxPow = new AuxPow();
 
@@ -225,24 +230,65 @@ namespace NBitcoin.Altcoins
 					auxPow = value;
 				}
 			}
-
-			public override uint256 GetPoWHash()
+			const int VERSION_AUXPOW = (1 << 8);
+			internal void ReadWriteHeader(BitcoinStream stream)
 			{
-				var headerBytes = this.ToBytes();
-				var h = NBitcoin.Crypto.SCrypt.ComputeDerivedKey(headerBytes, headerBytes, 1024, 1, 1, null, 32);
-				return new uint256(h);
+				stream.ReadWrite(ref header);
+				if((header.Version & VERSION_AUXPOW) != 0)
+				{
+					stream.ReadWrite(ref auxPow);
+				}
 			}
-
 			public override void ReadWrite(BitcoinStream stream)
 			{
-				base.ReadWrite(stream);
-				if((Version & VERSION_AUXPOW) != 0)
+				using (stream.ConsensusFactoryScope(GetConsensusFactory()))
 				{
-					if(!stream.Serializing)
+					ReadWriteHeader(stream);
+					stream.ReadWrite(ref vtx);
+				}
+			}
+
+			public override ConsensusFactory GetConsensusFactory()
+			{
+				return DogeConsensusFactory.Instance;
+			}
+		}
+		class DogecoinHeadersPayload : HeadersPayload
+		{
+			class DogecoinHeaderWithTxCount : IBitcoinSerializable
+			{
+				internal DogecoinBlock Block = (DogecoinBlock)DogeConsensusFactory.Instance.CreateBlock();
+
+				public void ReadWrite(BitcoinStream stream)
+				{
+					using (stream.ConsensusFactoryScope(DogeConsensusFactory.Instance))
 					{
-						stream.ReadWrite(ref auxPow);
+						Block.ReadWriteHeader(stream);
+						if (stream.Serializing)
+							VarInt.StaticWrite(stream, 0);
+						else
+							VarInt.StaticRead(stream);
 					}
 				}
+			}
+
+			List<DogecoinHeaderWithTxCount> headers = new List<DogecoinHeaderWithTxCount>();
+
+			public override void ReadWriteCore(BitcoinStream stream)
+			{
+				if (stream.Serializing)
+				{
+					if (headers.Count == Headers.Count && headers.Select(h => h.Block.Header).SequenceEqual(Headers))
+						stream.ReadWrite(ref headers);
+					else
+						base.ReadWriteCore(stream);
+					return;
+				}
+
+				// Dogecoin Core parses each header and ignores its assumed-zero transaction count.
+				stream.ReadWrite(ref headers);
+				Headers.Clear();
+				Headers.AddRange(headers.Select(h => h.Block.Header));
 			}
 		}
 

@@ -15,7 +15,6 @@ using AssetBuilder = System.Action<NBitcoin.TransactionBuilder.TransactionBuildi
 using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using System.Diagnostics.CodeAnalysis;
-using NBitcoin.Scripting.Parser;
 
 namespace NBitcoin
 {
@@ -77,7 +76,7 @@ namespace NBitcoin
 		/// <summary>
 		/// Providing the PrecomputedTransactionData speed up signing time, by pre computing one several hashes need
 		/// for the calculation of the signatures of every input.
-		/// 
+		///
 		/// For taproot transaction signing, the precomputed transaction data is required if some of the inputs does not
 		/// belong to the signer.
 		/// </summary>
@@ -1010,7 +1009,8 @@ namespace NBitcoin
 			foreach (var pk in keyPairs.Select(k => k.PubKey).OfType<PubKey>())
 			{
 				AddKnownRedeems(pk.ScriptPubKey);
-				AddKnownRedeems(pk.WitHash.ScriptPubKey);
+				if (pk.IsCompressed)
+					AddKnownRedeems(pk.WitHash.ScriptPubKey);
 				AddKnownRedeems(pk.Hash.ScriptPubKey);
 			}
 			return this;
@@ -1045,6 +1045,9 @@ namespace NBitcoin
 				throw new ArgumentNullException(nameof(coin));
 			if (coin.TxOut.ScriptPubKey.IsUnspendable)
 				throw new InvalidOperationException("You cannot add an unspendable coin");
+			if (CurrentGroup.CoinsWithOptions.TryGetValue(coin.Outpoint, out var existing) &&
+				(existing.Coin.TxOut.Value != coin.TxOut.Value || existing.Coin.TxOut.ScriptPubKey != coin.TxOut.ScriptPubKey))
+				throw new InvalidOperationException($"A coin with outpoint {coin.Outpoint} was already added with a different amount or scriptPubKey");
 			CurrentGroup.CoinsWithOptions.AddOrReplace(coin.Outpoint, new CoinWithOptions(coin, options));
 			return this;
 		}
@@ -1788,6 +1791,11 @@ namespace NBitcoin
 				{
 					ctx.Transaction.Outputs.Clear();
 					ctx.Transaction.Outputs.AddRange(collapsedOutputs);
+					foreach (var gctx in ctx.GroupContexts)
+					{
+						if (gctx.FeeTxOut is TxOut feeTxOut)
+							gctx.FeeTxOut = collapsedOutputs.Single(o => o.ScriptPubKey == feeTxOut.ScriptPubKey);
+					}
 				}
 			}
 			ctx.InsertOpenAssetMarker();

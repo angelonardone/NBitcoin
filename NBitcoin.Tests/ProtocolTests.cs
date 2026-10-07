@@ -1,5 +1,4 @@
-﻿#if !NOSOCKET
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -326,7 +325,7 @@ namespace NBitcoin.Tests
 					Eventually(() =>
 					{
 						Assert.NotEmpty(group.ConnectedNodes);
-						Assert.All(group.ConnectedNodes, connectedNode => 
+						Assert.All(group.ConnectedNodes, connectedNode =>
 							Assert.True(connectedNode.RemoteSocketEndpoint.IsEqualTo(node.NodeEndpoint)));
 					});
 				}
@@ -697,7 +696,6 @@ namespace NBitcoin.Tests
 			}
 		}
 
-#if !NOFILEIO
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
 		public void CanConnectToRandomNode()
@@ -742,7 +740,6 @@ namespace NBitcoin.Tests
 			}
 			return new AddressManager();
 		}
-#endif
 
 		[Fact]
 		[Trait("Protocol", "Protocol")]
@@ -1197,4 +1194,3 @@ namespace NBitcoin.Tests
 		}
 	}
 }
-#endif

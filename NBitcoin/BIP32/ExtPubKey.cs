@@ -75,6 +75,7 @@ namespace NBitcoin
 		{
 		}
 
+		public static bool SkipInvalidMasterExtPubKeyCheck = false;
 		/// <summary>
 		/// Creates a new extended public key from the specified extended public key bytes.
 		/// </summary>
@@ -91,6 +92,13 @@ namespace NBitcoin
 			i += 4;
 			nChild = Utils.ToUInt32(bytes, i, false);
 			i += 4;
+			if (!SkipInvalidMasterExtPubKeyCheck)
+			{
+				if (nDepth == 0 && (parentFingerprint != default || nChild != 0))
+					throw new ArgumentException(
+						"Invalid ExtPubKey: Master key (depth 0) must have zero parent fingerprint and zero child number (Set ExtPubkey.SkipInvalidMasterExtPubKeyCheck to skip this check)");
+			}
+
 			vchChainCode = new byte[32];
 			Array.Copy(bytes, i, vchChainCode, 0, 32);
 			i += 32;
@@ -104,8 +112,6 @@ namespace NBitcoin
 		/// </summary>
 		public ExtPubKey(ReadOnlySpan<byte> bytes)
 		{
-			if (bytes == null)
-				throw new ArgumentNullException(nameof(bytes));
 			if (bytes.Length != Length)
 				throw new FormatException($"An extpubkey should be {Length} bytes");
 			int i = 0;
@@ -115,6 +121,11 @@ namespace NBitcoin
 			i += 4;
 			nChild = Utils.ToUInt32(bytes.Slice(i, 4), false);
 			i += 4;
+			if (!SkipInvalidMasterExtPubKeyCheck)
+			{
+				if (nDepth == 0 && (parentFingerprint != default || nChild != 0))
+					throw new ArgumentException("Invalid ExtPubKey: Master key (depth 0) must have zero parent fingerprint and zero child number (Set ExtPubkey.SkipInvalidMasterExtPubKeyCheck to skip this check)");
+			}
 			vchChainCode = new byte[32];
 			bytes.Slice(i, 32).CopyTo(vchChainCode);
 			i += 32;
@@ -180,6 +191,8 @@ namespace NBitcoin
 
 		public ExtPubKey Derive(uint index)
 		{
+			if (nDepth == byte.MaxValue)
+				throw new InvalidOperationException("Cannot derive a child key at depth 255.");
 			var childPubKey = pubkey.Derivate(this.vchChainCode, index, out var chainCode);
 			var result = new ExtPubKey(childPubKey, chainCode, (byte)(nDepth + 1), PubKey.GetHDFingerPrint(), index);
 			return result;

@@ -1,4 +1,3 @@
-#if !NOSOCKET
 using NBitcoin.Crypto;
 using NBitcoin.Protocol.Behaviors;
 using System;
@@ -327,7 +326,6 @@ namespace NBitcoin.Protocol
 		const int ADDRMAN_GETADDR_MAX = 2500;
 
 
-#if !NOFILEIO
 		public static AddressManager LoadPeerFile(string filePath, Network expectedNetwork = null)
 		{
 			var addrman = new AddressManager();
@@ -335,9 +333,9 @@ namespace NBitcoin.Protocol
 			using (var fs = File.Open(filePath, FileMode.Open, FileAccess.Read))
 			{
 				data = new byte[fs.Length - 32];
-				fs.Read(data, 0, data.Length);
+				fs.ReadEx(data, 0, data.Length);
 				hash = new byte[32];
-				fs.Read(hash, 0, 32);
+				fs.ReadEx(hash, 0, 32);
 			}
 			var actual = Hashes.DoubleSHA256(data);
 			var expected = new uint256(hash);
@@ -377,7 +375,6 @@ namespace NBitcoin.Protocol
 			}
 			File.WriteAllBytes(filePath, ms.ToArray());
 		}
-#endif
 
 		AddressInfo Find(NetworkAddress addr)
 		{
@@ -1315,4 +1312,3 @@ namespace NBitcoin.Protocol
 		}
 	}
 }
-#endif

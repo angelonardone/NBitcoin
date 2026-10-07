@@ -3,19 +3,11 @@ using NBitcoin.DataEncoders;
 using NBitcoin.Protocol;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-#if !NOCONSENSUSLIB
-using System.Net.Http;
-#endif
-using System.Numerics;
-using System.Text;
 using System.Threading.Tasks;
 using Xunit;
 using Newtonsoft.Json.Linq;
-using System.Runtime.InteropServices;
-using FsCheck;
 using System.Net.Http;
 using System.IO.Compression;
 using Xunit.Abstractions;
@@ -228,18 +220,6 @@ namespace NBitcoin.Tests
 
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
-		public void CanCompressScript2()
-		{
-			var key = new Key(true);
-			var script = PayToPubkeyHashTemplate.Instance.GenerateScriptPubKey(key.PubKey.Hash);
-			var compressed = script.ToCompressedBytes();
-			Assert.Equal(21, compressed.Length);
-
-			Assert.Equal(script.ToString(), new Script(compressed, true).ToString());
-		}
-
-		[Fact]
-		[Trait("UnitTest", "UnitTest")]
 		public void CanParseAndGeneratePayToTaprootScripts()
 		{
 			var pubkey = new TaprootPubKey(Encoders.Hex.DecodeData("53a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343"));
@@ -317,60 +297,6 @@ namespace NBitcoin.Tests
 		}
 
 		[Fact]
-		[Trait("UnitTest", "UnitTest")]
-		public void CanCompressScript()
-		{
-			var key = new Key(true);
-
-			//Pay to pubkey hash (encoded as 21 bytes)
-			var script = PayToPubkeyHashTemplate.Instance.GenerateScriptPubKey(key.PubKey.Hash);
-			AssertCompressed(script, 21);
-			script = PayToPubkeyHashTemplate.Instance.GenerateScriptPubKey(key.PubKey.Decompress().Hash);
-			AssertCompressed(script, 21);
-
-			//Pay to script hash (encoded as 21 bytes)
-			script = PayToScriptHashTemplate.Instance.GenerateScriptPubKey(script);
-			AssertCompressed(script, 21);
-
-			//Pay to pubkey starting with 0x02, 0x03 or 0x04 (encoded as 33 bytes)
-			script = PayToPubkeyTemplate.Instance.GenerateScriptPubKey(key.PubKey);
-			script = AssertCompressed(script, 33);
-			var readenKey = PayToPubkeyTemplate.Instance.ExtractScriptPubKeyParameters(script);
-			AssertEx.CollectionEquals(readenKey.ToBytes(), key.PubKey.ToBytes());
-
-			script = PayToPubkeyTemplate.Instance.GenerateScriptPubKey(key.PubKey.Decompress());
-			script = AssertCompressed(script, 33);
-			readenKey = PayToPubkeyTemplate.Instance.ExtractScriptPubKeyParameters(script);
-			AssertEx.CollectionEquals(readenKey.ToBytes(), key.PubKey.Decompress().ToBytes());
-
-
-			//Other scripts up to 121 bytes require 1 byte + script length.
-			script = new Script(Enumerable.Range(0, 60).Select(_ => (Op)OpcodeType.OP_RETURN).ToArray());
-			AssertCompressed(script, 61);
-			script = new Script(Enumerable.Range(0, 120).Select(_ => (Op)OpcodeType.OP_RETURN).ToArray());
-			AssertCompressed(script, 121);
-
-			//Above that, scripts up to 16505 bytes require 2 bytes + script length.
-			script = new Script(Enumerable.Range(0, 122).Select(_ => (Op)OpcodeType.OP_RETURN).ToArray());
-			AssertCompressed(script, 124);
-		}
-
-		private Script AssertCompressed(Script script, int expectedSize)
-		{
-			var compressor = new ScriptCompressor(script);
-			var compressed = compressor.ToBytes();
-			Assert.Equal(expectedSize, compressed.Length);
-
-			compressor = new ScriptCompressor();
-			compressor.ReadWrite(compressed, Network);
-			AssertEx.CollectionEquals(compressor.GetScript().ToBytes(), script.ToBytes());
-
-			var compressed2 = compressor.ToBytes();
-			AssertEx.CollectionEquals(compressed, compressed2);
-			return compressor.GetScript();
-		}
-
-		[Fact]
 		[Trait("Core", "Core")]
 		public void sig_validinvalid()
 		{
@@ -395,7 +321,6 @@ namespace NBitcoin.Tests
 		[Trait("Core", "Core")]
 		public void script_json_tests()
 		{
-			EnsureHasLibConsensus();
 			var tests = TestCase.read_json("data/script_tests.json");
 			foreach (var test in tests)
 			{
@@ -441,54 +366,6 @@ namespace NBitcoin.Tests
 
 			spendingTransaction.Inputs.FindIndexedInput(0).VerifyScript(new TxOut(amount, scriptPubKey), flags, out var actual);
 			Assert.True(expectedError == actual, "Test : " + testIndex + " " + comment);
-#if !NOCONSENSUSLIB
-			var ok = Script.VerifyScriptConsensus(scriptPubKey, spendingTransaction, 0, amount, flags);
-
-			// If the spendingTransaction correctly spends the scriptPubKey but the expected error is not okay
-			// because of a policy flags then, we ignore the test; otherwise assert everything the expected result
-			// is the expected one.
-			if (ok && (expectedError != ScriptError.OK) && (flags & ~ScriptVerify.Consensus) != 0)
-				return;
-			Assert.True(ok == (expectedError == ScriptError.OK), "[ConsensusLib] Test : " + testIndex + " " + comment);
-#endif
-		}
-
-
-		private void EnsureHasLibConsensus()
-		{
-#if !NOCONSENSUSLIB
-			var bitcoinPath = NodeBuilder.EnsureDownloaded(NodeDownloadData.Bitcoin.v0_17_0);
-
-			string libConsensusDll = null;
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-			{
-				libConsensusDll = "libbitcoinconsensus-0.dll";
-			}
-			else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-			{
-				libConsensusDll = "libbitcoinconsensus.0.dylib";
-			}
-			else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-			{
-				libConsensusDll = "libbitcoinconsensus.so";
-			}
-			else
-			{
-				throw new NotSupportedException("Unknown operating system");
-			}
-
-			bitcoinPath = Path.GetDirectoryName(bitcoinPath);
-			var libConsensusPath = Path.Combine(bitcoinPath, "..", "lib", libConsensusDll);
-			libConsensusPath = Path.GetFullPath(libConsensusPath);
-			try
-			{
-				File.Copy(libConsensusPath, $"./{libConsensusDll}", overwrite: false);
-			}
-			catch (IOException)
-			{
-
-			}
-#endif
 		}
 
 		private static Transaction CreateSpendingTransaction(WitScript wit, Script scriptSig, Transaction creditingTransaction)
@@ -723,7 +600,6 @@ namespace NBitcoin.Tests
 		[Trait("Core", "Core")]
 		public void script_CHECKMULTISIG12()
 		{
-			EnsureHasLibConsensus();
 			Key key1 = new Key(true);
 			Key key2 = new Key(false);
 			Key key3 = new Key(true);
@@ -765,7 +641,6 @@ namespace NBitcoin.Tests
 		[Trait("Core", "Core")]
 		public void script_CHECKMULTISIG23()
 		{
-			EnsureHasLibConsensus();
 			Key key1 = new Key(true);
 			Key key2 = new Key(false);
 			Key key3 = new Key(true);
@@ -833,17 +708,11 @@ namespace NBitcoin.Tests
 		private void AssertInvalidScript(TxOut txOut, Transaction tx, int n, ScriptVerify verify)
 		{
 			Assert.False(tx.Inputs.FindIndexedInput(n).VerifyScript(txOut, verify, out _));
-#if !NOCONSENSUSLIB
-			Assert.False(Script.VerifyScriptConsensus(txOut.ScriptPubKey, tx, (uint)n, flags));
-#endif
 		}
 
 		private void AssertValidScript(TxOut txOut, Transaction tx, int n, ScriptVerify verify)
 		{
 			Assert.True(tx.Inputs.FindIndexedInput(n).VerifyScript(txOut, verify, out _));
-#if !NOCONSENSUSLIB
-			Assert.True(Script.VerifyScriptConsensus(txOut.ScriptPubKey, tx, (uint)n, flags & ScriptVerify.Consensus));
-#endif
 		}
 
 		[Fact]
@@ -1012,6 +881,38 @@ namespace NBitcoin.Tests
 			AssertEx.StackEquals(pushdata4Stack.Stack, directStack.Stack);
 		}
 
+		[Theory]
+		[InlineData(OpcodeType.OP_CHECKMULTISIG)]
+		[InlineData(OpcodeType.OP_CHECKMULTISIGVERIFY)]
+		public void TapscriptRejectsCheckMultiSig(OpcodeType opcode)
+		{
+			var script = new Script(new byte[] { 0, 0, 0, (byte)opcode });
+			var context = new ScriptEvaluationContext();
+
+			Assert.False(context.EvalScript(script, new TransactionChecker(Network.CreateTransaction(), 0), HashVersion.Tapscript));
+			Assert.Equal(ScriptError.TapscriptCheckMultiSig, context.Error);
+		}
+
+		[Fact]
+		public void TapscriptHandlesDeepConditionals()
+		{
+			const int depth = 10_000;
+			var bytes = new byte[depth * 3 + 1];
+			var offset = 0;
+			for (var i = 0; i < depth; i++)
+			{
+				bytes[offset++] = (byte)OpcodeType.OP_1;
+				bytes[offset++] = (byte)OpcodeType.OP_IF;
+			}
+			for (var i = 0; i < depth; i++)
+				bytes[offset++] = (byte)OpcodeType.OP_ENDIF;
+			bytes[offset] = (byte)OpcodeType.OP_1;
+
+			var context = new ScriptEvaluationContext();
+			Assert.True(context.EvalScript(new Script(bytes), new TransactionChecker(Network.CreateTransaction(), 0), HashVersion.Tapscript));
+			Assert.Equal(ScriptError.OK, context.Error);
+		}
+
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
 		public void script_OPNIP()
@@ -1069,6 +970,12 @@ namespace NBitcoin.Tests
 			pub = PayToPubkeyTemplate.Instance.ExtractScriptPubKeyParameters(new Script(scriptPubKey));
 			Assert.Null(pub);
 
+			var malformedBytes = PayToPubkeyTemplate.Instance.GenerateScriptPubKey(new Key().PubKey).ToBytes();
+			malformedBytes[0] = (byte)OpcodeType.OP_NOP;
+			var malformed = Script.FromBytesUnsafe(malformedBytes);
+			Assert.False(PayToPubkeyTemplate.Instance.CheckScriptPubKey(malformed));
+			Assert.Null(PayToPubkeyTemplate.Instance.ExtractScriptPubKeyParameters(malformed));
+
 			string scriptSig = "3044022064f45a382a15d3eb5e7fe72076eec4ef0f56fde1adfd710866e729b9e5f3383d02202720a895914c69ab49359087364f06d337a2138305fbc19e20d18da78415ea9301";
 			var sig = PayToPubkeyTemplate.Instance.ExtractScriptSigParameters(new Script(scriptSig));
 			Assert.NotNull(sig);
@@ -1113,17 +1020,15 @@ namespace NBitcoin.Tests
 			}
 
 			// Test on non canonic values
-			testCases = new (byte[] Bytes, ulong Value)[]
+			var nonCanonicalTestCases = new byte[][]
 			{
-				(Bytes: new byte[] { 0xFD, 0x01, 0x00 }, Value: 0x01),
-				(Bytes: new byte[] { 0xFE, 0x01, 0x00, 0x00, 0x00 }, Value: 0x01),
-				(Bytes: new byte[] { 0xFF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, Value: 0x01)
+				new byte[] { 0xFD, 0x01, 0x00 },
+				new byte[] { 0xFE, 0x01, 0x00, 0x00, 0x00 },
+				new byte[] { 0xFF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
 			};
-			foreach (var testCase in testCases)
-			{
-				var stream = new BitcoinStream(testCase.Bytes);
-				Assert.Equal(testCase.Value, VarInt.StaticRead(stream));
-			}
+			Assert.All(nonCanonicalTestCases,
+				testCase => Assert.Throws<InvalidDataException>(
+					()=> VarInt.StaticRead(new BitcoinStream(testCase))));
 		}
 
 		[Fact]
@@ -1149,6 +1054,9 @@ namespace NBitcoin.Tests
 			var actualParam2 = PayToWitPubKeyHashTemplate.Instance.ExtractWitScriptParameters(script);
 			Assert.NotNull(actualParam2);
 			Assert.Equal(pubkey, actualParam2.PublicKey);
+			var uncompressedPubKey = pubkey.Decompress();
+			var uncompressedWitScript = PayToWitPubKeyHashTemplate.Instance.GenerateWitScript(null, uncompressedPubKey);
+			Assert.Null(PayToWitPubKeyHashTemplate.Instance.ExtractWitScriptParameters(uncompressedWitScript));
 
 			var scriptSig = new Script("304402206b782f095f52f12133a96c078b558458b84c925afdb620d96c5f5bbf483e28d502206206796ff45d80216b83c77bafc4e7951fdb10a5bf3e4041c0e6c0938079b22b01 2103");
 			var redeem = new Script(Encoders.Hex.DecodeData("2103a65786c1a48d4167aca08cf6eb8eed081e13f45c02dc6000fd8f3bb16242579aac"));

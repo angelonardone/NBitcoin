@@ -1,21 +1,15 @@
-﻿#if !NOSOCKET
-using NBitcoin.DataEncoders;
-using NBitcoin.Protocol;
+﻿using NBitcoin.Protocol;
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using Xunit;
 
 namespace NBitcoin.Tests
 {
 	public class addrman_tests
 	{
-#if !NOFILEIO
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
 		public void CanSerializeDeserializePeerTable()
@@ -57,8 +51,6 @@ namespace NBitcoin.Tests
 			Assert.Equal("wasabiukrxmkdgve5kynjztuovbg43uxcbcxn6y2okcrsg7gb6jdmbad.onion", dns.Host);
 			Assert.Equal(8333, dns.Port);
 		}
-
-#endif
 
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
@@ -178,4 +170,3 @@ namespace NBitcoin.Tests
 		}
 	}
 }
-#endif

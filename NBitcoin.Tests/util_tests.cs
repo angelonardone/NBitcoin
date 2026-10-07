@@ -6,7 +6,6 @@ using NBitcoin.DataEncoders;
 using NBitcoin.JsonConverters;
 using NBitcoin.OpenAsset;
 using NBitcoin.RPC;
-using Newtonsoft.Json.Linq;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -157,6 +156,7 @@ namespace NBitcoin.Tests
 			valid.Add(maxKeypath.ToString());
 			valid.Add("m/" + maxKeypath.ToString());
 			invalid.Add("m/" + maxKeypath.ToString() + "/0");
+			invalid.Add(string.Join("/", Enumerable.Repeat("0", 10_000)));
 			foreach (var v in valid)
 			{
 				KeyPath.Parse(v);
@@ -165,7 +165,8 @@ namespace NBitcoin.Tests
 			foreach (var v in invalid)
 			{
 				Assert.Throws<FormatException>(() => KeyPath.Parse(v));
-				Assert.False(KeyPath.TryParse(v, out _));
+				Assert.False(KeyPath.TryParse(v, out var parsed));
+				Assert.Null(parsed);
 			}
 		}
 
@@ -232,7 +233,16 @@ namespace NBitcoin.Tests
 
 			//Example of the BIP
 			pubkey = new PubKey("0450863AD64A87AE8A2FE83C1AF1A8403CB53F53E486D8511DAD8A04887E5B23522CD470243453A299FA9E77237716103ABC11A1DF38855ED6F2EE187E9C582BA6");
-			Assert.Equal(new Script("OP_0 010966776006953D5567439E5E39F86A0D273BEE"), pubkey.GetAddress(ScriptPubKeyType.Segwit, Network.Main).ScriptPubKey);
+			Assert.Throws<InvalidOperationException>(() => pubkey.GetAddress(ScriptPubKeyType.Segwit, Network.Main));
+			Assert.Throws<InvalidOperationException>(() => pubkey.GetAddress(ScriptPubKeyType.SegwitP2SH, Network.Main));
+			Assert.Throws<InvalidOperationException>(() => pubkey.GetDestination(ScriptPubKeyType.Segwit));
+			Assert.Throws<InvalidOperationException>(() => pubkey.GetScriptPubKey(ScriptPubKeyType.SegwitP2SH));
+			Assert.Throws<InvalidOperationException>(() => pubkey.WitHash);
+			Assert.Throws<InvalidOperationException>(() => PayToWitPubKeyHashTemplate.Instance.GenerateScriptPubKey(pubkey));
+			Assert.Throws<InvalidOperationException>(() => new PayToWitPubkeyHashScriptSigParameters(null, pubkey).Hash);
+			Network.Main.CreateTransactionBuilder().AddKeys(new KeyPair(new Key(), pubkey));
+			var legacyCoin = new Coin(new OutPoint(uint256.One, 0), new TxOut(Money.Coins(1), pubkey.ScriptPubKey.Hash));
+			Assert.NotNull(legacyCoin.TryToScriptCoin(pubkey));
 
 
 			//Test .ToNetwork()
@@ -432,6 +442,7 @@ namespace NBitcoin.Tests
 			Assert.Equal(Money.Coins(5), Money.Coins(1.0m) * data);
 			Assert.Equal(500000000L, Money.Coins(5).Satoshi);
 			Assert.Equal(500000000U, (uint)Money.Coins(5).Satoshi);
+			Assert.Equal(100L, Money.Bits(1).Satoshi);
 			Assert.Equal("5.00000000", Money.Coins(5).ToString());
 		}
 
@@ -773,6 +784,7 @@ namespace NBitcoin.Tests
 			Assert.True(!HexEncoder.IsWellFormed("eleven"));
 			Assert.True(!HexEncoder.IsWellFormed("00xx00"));
 			Assert.True(!HexEncoder.IsWellFormed("0x0000"));
+			Assert.True(!HexEncoder.IsWellFormed("\u0100\u0100"));
 		}
 #if !HAS_SPAN
 		[Fact]
@@ -939,7 +951,7 @@ namespace NBitcoin.Tests
 				Assert.True(Utils.ArrayEqual(text1, plainText));
 				Assert.Equal(text2, Encoders.ASCII.EncodeData(plainText));
 
-				// Encrypt twice, should not give twice same cypher
+				// Encrypt twice, should not give twice same cipher
 				var cipherText3 = key.PubKey.Encrypt(plainText);
 				Assert.True(!Utils.ArrayEqual(cipherText1, cipherText3));
 			}
@@ -954,13 +966,7 @@ namespace NBitcoin.Tests
 		{
 			var bytes = Encoding.UTF8.GetBytes(password);
 #pragma warning disable CS0618 // Type or member is obsolete
-#if NO_NATIVE_HMACSHA512
-			var mac = new NBitcoin.BouncyCastle.Crypto.Macs.HMac(new NBitcoin.BouncyCastle.Crypto.Digests.Sha512Digest());
-			mac.Init(new NBitcoin.BouncyCastle.Crypto.Parameters.KeyParameter(bytes));
-			var secret = Pbkdf2.ComputeDerivedKey(mac, new byte[0], 1024, 32);
-#else
 			var secret = NBitcoin.Crypto.Pbkdf2.ComputeDerivedKey(new System.Security.Cryptography.HMACSHA512(bytes), new byte[0], 1024, 32);
-#endif
 #pragma warning restore CS0618
 			return new Key(secret);
 		}

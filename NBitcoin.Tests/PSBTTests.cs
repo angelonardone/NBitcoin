@@ -1,5 +1,4 @@
 using Xunit;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.IO;
 using System;
@@ -172,6 +171,74 @@ namespace NBitcoin.Tests
 			psbt.Inputs[0].NonWitnessUtxo = funding;
 			Assert.True(psbt.TryGetFee(out _));
 			Assert.Empty(psbt.Inputs[0].CheckSanity());
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void TransactionBuilderRejectsConflictingCoinsFromPSBT()
+		{
+			var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
+			var trustedTxOut = new TxOut(Money.Coins(1.0m), new Key());
+
+			foreach (var conflictingTxOut in new[]
+			{
+				new TxOut(Money.Coins(2.0m), trustedTxOut.ScriptPubKey),
+				new TxOut(trustedTxOut.Value, new Key())
+			})
+			{
+				var transaction = Network.Main.CreateTransaction();
+				transaction.Inputs.Add(outpoint);
+				transaction.Outputs.Add(Money.Coins(0.5m), new Key());
+				var psbt = PSBT.FromTransaction(transaction, Network.Main);
+				psbt.Inputs[0].WitnessUtxo = conflictingTxOut;
+
+				var builder = Network.Main.CreateTransactionBuilder();
+				builder.AddCoin(new Coin(outpoint, trustedTxOut));
+				var exception = Assert.Throws<InvalidOperationException>(() => builder.AddCoins(psbt));
+				Assert.Contains("different amount or scriptPubKey", exception.Message);
+				Assert.Same(trustedTxOut, builder.FindCoin(outpoint).TxOut);
+			}
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void TransactionBuilderAllowsIdenticalCoinFromPSBT()
+		{
+			var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
+			var trustedTxOut = new TxOut(Money.Coins(1.0m), new Key());
+			var identicalTxOut = trustedTxOut.Clone();
+			var transaction = Network.Main.CreateTransaction();
+			transaction.Inputs.Add(outpoint);
+			transaction.Outputs.Add(Money.Coins(0.5m), new Key());
+			var psbt = PSBT.FromTransaction(transaction, Network.Main);
+			psbt.Inputs[0].WitnessUtxo = identicalTxOut;
+
+			var builder = Network.Main.CreateTransactionBuilder();
+			builder.AddCoin(new Coin(outpoint, trustedTxOut));
+			builder.AddCoins(psbt);
+
+			Assert.Same(identicalTxOut, builder.FindCoin(outpoint).TxOut);
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void TransactionBuilderCanUpdateOptionsForIdenticalCoin()
+		{
+			var key = new Key();
+			var coin = new Coin(new OutPoint(RandomUtils.GetUInt256(), 0), new TxOut(Money.Coins(1.0m), key));
+			var identicalCoin = new Coin(coin.Outpoint, coin.TxOut.Clone());
+			var updatedSequence = new Sequence(42);
+			var builder = Network.Main.CreateTransactionBuilder();
+			builder.AddCoin(coin, new CoinOptions { Sequence = new Sequence(21) });
+			builder.AddCoin(identicalCoin, new CoinOptions { Sequence = updatedSequence });
+			builder.Send(new Key(), Money.Coins(0.5m));
+			builder.SendFees(Money.Coins(0.001m));
+			builder.SetChange(key);
+
+			var transaction = builder.BuildTransaction(false);
+
+			Assert.Same(identicalCoin, builder.FindCoin(coin.Outpoint));
+			Assert.Equal(updatedSequence, transaction.Inputs.Single().Sequence);
 		}
 
 		[Fact]

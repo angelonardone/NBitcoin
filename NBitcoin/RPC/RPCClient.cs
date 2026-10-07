@@ -16,7 +16,7 @@ using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using NBitcoin.Scripting;
+using NBitcoin.WalletPolicies;
 using static NBitcoin.RPC.BlockchainInfo;
 
 namespace NBitcoin.RPC
@@ -270,8 +270,6 @@ namespace NBitcoin.RPC
 		static ConcurrentDictionary<Network, string> _DefaultPaths = new ConcurrentDictionary<Network, string>();
 		static RPCClient()
 		{
-
-#if !NOFILEIO
 			var bitcoinFolder = Network.GetDefaultDataFolder("bitcoin");
 			if (bitcoinFolder is null)
 				return;
@@ -284,8 +282,8 @@ namespace NBitcoin.RPC
 
 			var regtest = Path.Combine(bitcoinFolder, "regtest", ".cookie");
 			RegisterDefaultCookiePath(Network.RegTest, regtest);
-#endif
 		}
+
 		public static void RegisterDefaultCookiePath(Network network, string path)
 		{
 			_DefaultPaths.TryAdd(network, path);
@@ -332,9 +330,9 @@ namespace NBitcoin.RPC
 			);
 			await rpc.SendBatchAsync().ConfigureAwait(false);
 			await waiting.ConfigureAwait(false);
-#if !NETSTANDARD1X
+
 			Thread.MemoryBarrier();
-#endif
+
 			if (!capabilities.SupportGetNetworkInfo)
 			{
 #pragma warning disable CS0618 // Type or member is obsolete
@@ -739,7 +737,7 @@ namespace NBitcoin.RPC
 				// sneakily add it to the descriptor
 				var desc = descriptor.Desc.IndexOf('#') != -1
 					? descriptor.Desc
-					: OutputDescriptor.AddChecksum(descriptor.Desc);
+					: Miniscript.AddChecksum(descriptor.Desc);
 
 				obj.Add("desc", desc);
 				if (descriptor.Active is not null)
@@ -781,18 +779,14 @@ namespace NBitcoin.RPC
 			foreach (var descObj in parameters.Descriptors ?? new ScanTxoutDescriptor[0])
 			{
 				JObject descJson = new JObject();
-				descJson.Add(new JProperty("desc", descObj.Descriptor.ToString()));
-				if (descObj.Descriptor.IsRange())
+				descJson.Add(new JProperty("desc", descObj.Descriptor));
+				if (descObj.Begin is null && descObj.End is int end)
 				{
-					var r = new JArray();
-					if (descObj.Begin is null && descObj.End is int end)
-					{
-						descJson.Add(new JProperty("range", end));
-					}
-					if (descObj.Begin is int begin && descObj.End is int end2)
-					{
-						descJson.Add(new JProperty("range", new[] { begin, end2 }));
-					}
+					descJson.Add(new JProperty("range", end));
+				}
+				if (descObj.Begin is int begin && descObj.End is int end2)
+				{
+					descJson.Add(new JProperty("range", new[] { begin, end2 }));
 				}
 				descriptorsJson.Add(descJson);
 			}
@@ -997,7 +991,6 @@ namespace NBitcoin.RPC
 			if (cookiePath == null)
 				return false;
 
-#if !NOFILEIO
 			try
 			{
 				var newCookie = File.ReadAllText(cookiePath);
@@ -1011,9 +1004,6 @@ namespace NBitcoin.RPC
 			{
 				return false;
 			}
-#else
-			throw new NotSupportedException("Cookie authentication is not supported for this platform");
-#endif
 		}
 
 		static Encoding NoBOMUTF8 = new UTF8Encoding(false);
@@ -1023,11 +1013,7 @@ namespace NBitcoin.RPC
 			var batches = _BatchedRequests;
 			if (batches != null)
 			{
-#if NO_RCA
-				TaskCompletionSource<RPCResponse> source = new TaskCompletionSource<RPCResponse>();
-#else
-				TaskCompletionSource<RPCResponse> source = new TaskCompletionSource<RPCResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-#endif
+				var source = new TaskCompletionSource<RPCResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
 				batches.Enqueue(Tuple.Create(request, source));
 				response = await source.Task.ConfigureAwait(false);
 				if (request.ThrowIfRPCError)
@@ -1129,7 +1115,6 @@ namespace NBitcoin.RPC
 		}
 
 #region P2P Networking
-#if !NOSOCKET
 		public PeerInfo[] GetPeersInfo()
 		{
 			PeerInfo[] peers = null;
@@ -1175,17 +1160,19 @@ namespace NBitcoin.RPC
 					TimeOffset = TimeSpan.FromSeconds(Math.Min((long)int.MaxValue, (long)peer["timeoffset"])),
 					PingTime = peer["pingtime"] == null ? (TimeSpan?)null : TimeSpan.FromSeconds((double)peer["pingtime"]),
 					PingWait = TimeSpan.FromSeconds(pingWait),
-					Blocks = peer["blocks"] != null ? (int)peer["blocks"] : -1,
 					Version = (int)peer["version"],
 					SubVersion = (string)peer["subver"],
 					Inbound = (bool)peer["inbound"],
-					StartingHeight = (int)peer["startingheight"],
 					SynchronizedBlocks = (int)peer["synced_blocks"],
 					SynchronizedHeaders = (int)peer["synced_headers"],
-					IsWhiteListed = peer["whitelisted"] != null ? (bool)peer["whitelisted"] : false,
-					BanScore = peer["banscore"] == null ? 0 : (int)peer["banscore"],
 					Permissions = peer["permissions"] is JArray permissions ? permissions.Select(p => p.Value<string>()).ToArray() : new string[0],
-					Inflight = peer["inflight"].Select(x => uint.Parse((string)x)).ToArray()
+					Inflight = peer["inflight"].Select(x => uint.Parse((string)x)).ToArray(),
+#pragma warning disable CS0618 // Type or member is obsolete
+					Blocks = peer["blocks"] != null ? (int)peer["blocks"] : -1,
+					StartingHeight = peer["startingheight"] != null ? (int)peer["startingheight"] : 0,
+					IsWhiteListed = peer["whitelisted"] != null && (bool)peer["whitelisted"],
+					BanScore = peer["banscore"] == null ? 0 : (int)peer["banscore"]
+#pragma warning restore CS0618 // Type or member is obsolete
 				};
 			}
 			return result;
@@ -1284,7 +1271,6 @@ namespace NBitcoin.RPC
 				throw;
 			}
 		}
-#endif
 
 #endregion
 
@@ -1473,7 +1459,7 @@ namespace NBitcoin.RPC
 		{
 			var header = Network.Consensus.ConsensusFactory.CreateBlockHeader();
 			var hex = Encoders.Hex.DecodeData(resp.Result.Value<string>());
-			header.ReadWrite(new BitcoinStream(hex));
+			header.ReadWrite(hex, Network);
 			return header;
 		}
 
@@ -1488,9 +1474,15 @@ namespace NBitcoin.RPC
 			return ParseVerboseBlock(resp, (int)verbosity);
 		}
 
+#nullable enable
 		private GetBlockRPCResponse ParseVerboseBlock(RPCResponse resp, int verbosity)
 		{
 			var json = (JObject)resp.Result;
+			if (json is null)
+			{
+				throw new ArgumentException("Expected 'result' to be non-null.");
+			}
+
 			var blockHeader = Network.Consensus.ConsensusFactory.CreateBlockHeader();
 			blockHeader.Bits = new Target(Encoders.Hex.DecodeData(json.Value<string>("bits")));
 			blockHeader.Version = json.Value<int>("version");
@@ -1507,28 +1499,69 @@ namespace NBitcoin.RPC
 			{
 				blockHeader.HashPrevBlock = null;
 			}
+
 			// nextblockhash field does not exist for the chain tip.
-			uint256 nextBlockHash = null;
+			uint256? nextBlockHash = null;
 			if (json.TryGetValue("nextblockhash", StringComparison.Ordinal, out var nextBlockHashHex))
 			{
 				nextBlockHash = uint256.Parse(nextBlockHashHex.ToString());
 			}
 
-			Block block = null;
+			Block? block = null;
 			var txids = new List<uint256>();
-			if (verbosity == 2)
+			List<List<PrevOutInfo?>>? prevOuts = null;
+
+			if (verbosity == 2 || verbosity == 3)
 			{
 				var txs = new List<Transaction>();
-				foreach (var txInfo in json.Value<JArray>("tx"))
-				{
+				var txArray = json.Value<JArray>("tx") ?? throw new ArgumentNullException("'tx' must be an array. Null given.");
 
-					var tx = ParseTxHex(txInfo.Value<string>("hex"));
+				if (verbosity == 3)
+					prevOuts = new();
+
+				foreach (var txInfo in txArray)
+				{
+					var tx = Transaction.Parse(txInfo.Value<string>("hex"), Network);
 					txs.Add(tx);
 					txids.Add(tx.GetHash());
+
+					// Gather prevOut info for this transaction.
+					if (verbosity == 3)
+					{
+						var inputPrevOuts = new List<PrevOutInfo?>();
+						var vinArray = txInfo.Value<JArray>("vin");
+
+						if (vinArray is not null)
+						{
+							foreach (var vin in vinArray)
+							{
+								var prevOutJson = vin["prevout"] as JObject;
+								if (prevOutJson is null)
+								{
+									// Coinbase input, or a pruned node omitted this field.
+									inputPrevOuts.Add(null);
+									continue;
+								}
+
+								var scriptPubKeyJson = prevOutJson.Value<JObject>("scriptPubKey");
+								var scriptHex = scriptPubKeyJson?.Value<string>("hex");
+
+								var generated = prevOutJson.Value<bool>("generated");
+								var height = prevOutJson.Value<int>("height");
+								var money = Money.Coins(prevOutJson.Value<decimal>("value"));
+								var scriptPubKey = scriptHex is null ? null : new Script(Encoders.Hex.DecodeData(scriptHex));
+								inputPrevOuts.Add(new PrevOutInfo(generated, height, money, scriptPubKey));
+							}
+						}
+
+						prevOuts!.Add(inputPrevOuts);
+					}
 				}
+
 				block = Network.Consensus.ConsensusFactory.CreateBlock();
 				block.Header = blockHeader;
 				block.Transactions = txs;
+
 				if (!block.GetMerkleRoot().Hash.Equals(blockHeader.HashMerkleRoot))
 				{
 					throw new FormatException($"Bogus GetBlockRPCResponse! merkle root mistmach (expected: {blockHeader.HashMerkleRoot}. actual: {block.GetMerkleRoot().Hash})");
@@ -1536,7 +1569,9 @@ namespace NBitcoin.RPC
 			}
 			else if (verbosity == 1)
 			{
-				foreach (var tx in json.Value<JArray>("tx"))
+				var txArray = json.Value<JArray>("tx") ?? throw new ArgumentNullException("'tx' must be an array. Null given.");
+
+				foreach (var tx in txArray)
 				{
 					txids.Add(uint256.Parse(tx.ToString()));
 				}
@@ -1566,8 +1601,10 @@ namespace NBitcoin.RPC
 				Block = block,
 				Header = blockHeader,
 				TxIds = txids,
+				PrevOuts = prevOuts,
 			};
 		}
+#nullable disable
 
 		public uint256 GetBlockHash(int height)
 		{
@@ -1764,6 +1801,9 @@ namespace NBitcoin.RPC
 				ModifiedFee = new Money(jobj["fees"]["modified"].Value<decimal>(), MoneyUnit.BTC),
 				DescendantFees = new Money(jobj["fees"]["descendant"].Value<decimal>(), MoneyUnit.BTC),
 				AncestorFees = new Money(jobj["fees"]["ancestor"].Value<decimal>(), MoneyUnit.BTC),
+				ChunkWeight = jobj["chunkweight"] is null ? 0 : jobj["chunkweight"].Value<int>(),
+				Weight = jobj["weight"] is null ? 0 : jobj["weight"].Value<int>(),
+				ChunkFees = jobj["fees"]["chunk"] is null ? null : new Money(jobj["fees"]["chunk"].Value<decimal>(), MoneyUnit.BTC),
 				Depends = jobj["depends"]?.Select(x => uint256.Parse((string)x)).ToArray(),
 				SpentBy = jobj["spentby"]?.Select(x => uint256.Parse((string)x)).ToArray()
 			};
@@ -1953,7 +1993,7 @@ namespace NBitcoin.RPC
 
 		public Transaction DecodeRawTransaction(string rawHex)
 		{
-			return ParseTxHex(rawHex);
+			return Transaction.Parse(rawHex, Network);
 		}
 
 		public Transaction DecodeRawTransaction(byte[] raw)
@@ -1962,7 +2002,7 @@ namespace NBitcoin.RPC
 		}
 		public Task<Transaction> DecodeRawTransactionAsync(string rawHex)
 		{
-			return Task.FromResult(ParseTxHex(rawHex));
+			return Task.FromResult(Transaction.Parse(rawHex, Network));
 		}
 
 		public Task<Transaction> DecodeRawTransactionAsync(byte[] raw)
@@ -2014,13 +2054,6 @@ namespace NBitcoin.RPC
 			return GetRawTransactionInfoAsync(txid).GetAwaiter().GetResult();
 		}
 
-		private Transaction ParseTxHex(string hex)
-		{
-			var tx = Network.Consensus.ConsensusFactory.CreateTransaction();
-			tx.ReadWrite(Encoders.Hex.DecodeData(hex), Network);
-			return tx;
-		}
-
 		public async Task<RawTransactionInfo> GetRawTransactionInfoAsync(uint256 txId, CancellationToken cancellationToken = default)
 		{
 			var request = new RPCRequest(RPCOperations.getrawtransaction, new object[] { txId, true });
@@ -2029,7 +2062,7 @@ namespace NBitcoin.RPC
 
 			return new RawTransactionInfo
 			{
-				Transaction = ParseTxHex(json.Value<string>("hex")),
+				Transaction = Transaction.Parse(json.Value<string>("hex"), Network),
 				TransactionId = uint256.Parse(json.Value<string>("txid")),
 				TransactionTime = json["time"] != null ? NBitcoin.Utils.UnixTimeToDateTime(json.Value<long>("time")) : (DateTimeOffset?)null,
 				Hash = json["hash"] is JToken token ? uint256.Parse(token.Value<string>()) : null,
@@ -2465,8 +2498,6 @@ namespace NBitcoin.RPC
 			await SendCommandAsync(RPCOperations.invalidateblock, cancellationToken, blockhash).ConfigureAwait(false);
 		}
 
-#if !NOSOCKET
-
 		/// <summary>
 		/// Add the address of a potential peer to the address manager. This RPC is for testing only.
 		/// </summary>
@@ -2488,12 +2519,9 @@ namespace NBitcoin.RPC
 			return result.Result["success"].Value<bool>();
 		}
 
-#endif
-
 #endregion
 	}
 
-#if !NOSOCKET
 	public class PeerInfo
 	{
 		public int Id
@@ -2549,10 +2577,12 @@ namespace NBitcoin.RPC
 		{
 			get; internal set;
 		}
+		[Obsolete("The getpeerinfo RPC no longer returns the startingheight field unless the configuration option -deprecatedrpc=startingheight is used. The startingheight field will be fully removed in the next major release. (31.0)")]
 		public int StartingHeight
 		{
 			get; internal set;
 		}
+		[Obsolete("banscore` has been deprecated in 0.21")]
 		public int BanScore
 		{
 			get; internal set;
@@ -2569,6 +2599,7 @@ namespace NBitcoin.RPC
 		{
 			get; internal set;
 		}
+		[Obsolete("whitelisted` has been deprecated in 0.21")]
 		public bool IsWhiteListed
 		{
 			get; internal set;
@@ -2577,6 +2608,7 @@ namespace NBitcoin.RPC
 		{
 			get; internal set;
 		}
+		[Obsolete("Obsolete in bitcoin core")]
 		public int Blocks
 		{
 			get; internal set;
@@ -2615,8 +2647,6 @@ namespace NBitcoin.RPC
 			get; internal set;
 		}
 	}
-
-#endif
 
 	public class BlockchainInfo
 	{
@@ -2738,6 +2768,7 @@ namespace NBitcoin.RPC
 		/// Modified fees (see above) of in-mempool ancestors (including this one.)
 		/// </summary>
 		public Money AncestorFees { get; set; }
+		public Money ChunkFees { get; set; }
 		/// <summary>
 		/// Modified fees (see above) of in-mempool descendants (including this one.)
 		/// </summary>
@@ -2750,6 +2781,9 @@ namespace NBitcoin.RPC
 		/// Unconfirmed transactions spending outputs from this transaction.
 		/// </summary>
 		public uint256[] SpentBy { get; set; }
+
+		public int ChunkWeight { get; set; }
+		public int Weight { get; set; }
 	}
 
 #nullable enable

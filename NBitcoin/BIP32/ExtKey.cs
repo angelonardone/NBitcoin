@@ -206,6 +206,8 @@ namespace NBitcoin
 		{
 			if (seed == null)
 				throw new ArgumentNullException(nameof(seed));
+			if (seed.Length < 16 || seed.Length > 64)
+				throw new ArgumentOutOfRangeException(nameof(seed), "A BIP32 seed should be between 16 and 64 bytes.");
 			return new ExtKey(seed, true);
 		}
 		public static ExtKey CreateFromBytes(byte[] bytes)
@@ -237,6 +239,13 @@ namespace NBitcoin
 				i += 4;
 				nChild = Utils.ToUInt32(bytes, i, false);
 				i += 4;
+				if (!ExtPubKey.SkipInvalidMasterExtPubKeyCheck)
+				{
+					if (nDepth == 0 && (parentFingerprint != default || nChild != 0))
+						throw new ArgumentException(
+							"Invalid ExtKey: Master key (depth 0) must have zero parent fingerprint and zero child number (Set ExtPubkey.SkipInvalidMasterExtPubKeyCheck to skip this check)");
+				}
+
 				vchChainCode = new byte[32];
 				Array.Copy(bytes, i, vchChainCode, 0, 32);
 				i += 32;
@@ -252,6 +261,8 @@ namespace NBitcoin
 
 		public static ExtKey CreateFromSeed(ReadOnlySpan<byte> seed)
 		{
+			if (seed.Length < 16 || seed.Length > 64)
+				throw new ArgumentOutOfRangeException(nameof(seed), "A BIP32 seed should be between 16 and 64 bytes.");
 			return new ExtKey(seed, true);
 		}
 		public static ExtKey CreateFromBytes(ReadOnlySpan<byte> bytes)
@@ -277,6 +288,12 @@ namespace NBitcoin
 				i += 4;
 				nChild = Utils.ToUInt32(bytes.Slice(i, 4), false);
 				i += 4;
+				if (!ExtPubKey.SkipInvalidMasterExtPubKeyCheck)
+				{
+					if (nDepth == 0 && (parentFingerprint != default || nChild != 0))
+						throw new ArgumentException(
+							"Invalid ExtKey: Master key (depth 0) must have zero parent fingerprint and zero child number (Set ExtPubkey.SkipInvalidMasterExtPubKeyCheck to skip this check)");
+				}
 				vchChainCode = new byte[32];
 				bytes.Slice(i, 32).CopyTo(vchChainCode);
 				i += 32;
@@ -358,6 +375,8 @@ namespace NBitcoin
 		/// </summary>
 		public ExtKey Derive(uint index)
 		{
+			if (nDepth == byte.MaxValue)
+				throw new InvalidOperationException("Cannot derive a child key at depth 255.");
 			var childkey = key.Derivate(this.vchChainCode, index, out var childcc);
 			return new ExtKey(childkey, childcc, (byte)(nDepth + 1), this.key.PubKey.GetHDFingerPrint(), index);
 		}

@@ -343,7 +343,7 @@ namespace NBitcoin.RPC
 			var r = (JObject)response.Result;
 			return new FundRawTransactionResponse()
 			{
-				Transaction = ParseTxHex(r["hex"].Value<string>()),
+				Transaction = Transaction.Parse(r["hex"].Value<string>(), Network),
 				Fee = Money.Coins(r["fee"].Value<decimal>()),
 				ChangePos = r["changepos"].Value<int>()
 			};
@@ -524,84 +524,6 @@ namespace NBitcoin.RPC
 		public async Task ImportAddressAsync(BitcoinAddress address, string label, bool rescan)
 		{
 			await SendCommandAsync(RPCOperations.importaddress, address.ToString(), label, rescan).ConfigureAwait(false);
-		}
-
-
-		// importmulti
-		[Obsolete(RPCClient.UnsupportedByBitcoinCore)]
-		public void ImportMulti(ImportMultiAddress[] addresses, bool rescan) =>
-			ImportMulti(addresses, rescan, null);
-
-		#nullable enable
-		[Obsolete(RPCClient.UnsupportedByBitcoinCore)]
-		public void ImportMulti(ImportMultiAddress[] addresses, bool rescan, ISigningRepository? signingRepository)
-		{
-			ImportMultiAsync(addresses, rescan, signingRepository).GetAwaiter().GetResult();
-		}
-		[Obsolete(RPCClient.UnsupportedByBitcoinCore)]
-		public Task ImportMultiAsync(ImportMultiAddress[] addresses, bool rescan)
-			=> ImportMultiAsync(addresses, rescan, null);
-		/// <summary>
-		///
-		/// </summary>
-		/// <param name="addresses"></param>
-		/// <param name="rescan"></param>
-		/// <param name="signingRepository">If you specify this, This method tries to serialize OutputDescriptor with the private key (If there is any entry in the repository).</param>
-		/// <returns></returns>
-		/// <exception cref="RPCException"></exception>
-		[Obsolete(RPCClient.UnsupportedByBitcoinCore)]
-		public async Task ImportMultiAsync(ImportMultiAddress[] addresses, bool rescan, ISigningRepository? signingRepository, CancellationToken cancellationToken = default)
-		{
-			var parameters = new List<object>();
-
-			var array = new JArray();
-			parameters.Add(array);
-			var seria = JsonSerializer.CreateDefault(JsonSerializerSettings);
-			// -- replace json converter with the one with new `ISigningRepository`
-			var oldConverter =
-				seria.Converters
-					.FirstOrDefault(converter => converter is OutputDescriptorJsonConverter);
-			if (oldConverter != null)
-			{
-				seria.Converters.Remove(oldConverter);
-			}
-
-			signingRepository ??= new FlatSigningRepository();
-			foreach (var key in addresses.Where(x => x.Keys != null).SelectMany(x => x.Keys))
-			{
-				if (key != null)
-				{
-					signingRepository.SetSecret(key.PubKeyHash, key);
-				}
-			}
-			seria.Converters.Add(new OutputDescriptorJsonConverter(Network, false, signingRepository));
-
-			// -- --
-			foreach (var addr in addresses)
-			{
-				var obj = JObject.FromObject(addr, seria);
-				if (obj["timestamp"] == null || obj["timestamp"]?.Type is JTokenType.Null)
-					obj["timestamp"] = "now";
-				else
-					obj["timestamp"] = new JValue(Utils.DateTimeToUnixTime(addr.Timestamp!.Value));
-				array.Add(obj);
-			}
-
-			var oRescan = JObject.FromObject(new { rescan = rescan });
-			parameters.Add(oRescan);
-
-			var response = await SendCommandAsync("importmulti", cancellationToken, parameters.ToArray()).ConfigureAwait(false);
-			response.ThrowIfError();
-
-			//Somehow, this one has error embedded
-			var error = ((JArray)response.Result).OfType<JObject>()
-				.Select(j => j.GetValue("error") as JObject)
-				.FirstOrDefault(o => o != null);
-			if (error != null)
-			{
-				var errorObj = new RPCError(error);
-				throw new RPCException(errorObj.Code, errorObj.Message, response);
-			}
 		}
 
 		#nullable  disable
@@ -896,7 +818,7 @@ namespace NBitcoin.RPC
 			else
 			{
 				var result = await SendCommandAsync(RPCOperations.signrawtransaction, tx.ToHex()).ConfigureAwait(false);
-				return ParseTxHex(result.Result["hex"].Value<string>());
+				return Transaction.Parse(result.Result["hex"].Value<string>(), Network);
 			}
 		}
 
@@ -952,7 +874,7 @@ namespace NBitcoin.RPC
 
 			var result = await SendCommandWithNamedArgsAsync("signrawtransactionwithkey", values, cancellationToken).ConfigureAwait(false);
 			var response = new SignRawTransactionResponse();
-			response.SignedTransaction = ParseTxHex(result.Result["hex"].Value<string>());
+			response.SignedTransaction = Transaction.Parse(result.Result["hex"].Value<string>(), Network);
 			response.Complete = result.Result["complete"].Value<bool>();
 			var errors = result.Result["errors"] as JArray;
 			var errorList = new List<SignRawTransactionResponse.ScriptError>();
@@ -1018,7 +940,7 @@ namespace NBitcoin.RPC
 
 			var result = await SendCommandWithNamedArgsAsync("signrawtransactionwithwallet", values, cancellationToken).ConfigureAwait(false);
 			var response = new SignRawTransactionResponse();
-			response.SignedTransaction = ParseTxHex(result.Result["hex"].Value<string>());
+			response.SignedTransaction = Transaction.Parse(result.Result["hex"].Value<string>(), Network);
 			response.Complete = result.Result["complete"].Value<bool>();
 			var errors = result.Result["errors"] as JArray;
 			var errorList = new List<SignRawTransactionResponse.ScriptError>();

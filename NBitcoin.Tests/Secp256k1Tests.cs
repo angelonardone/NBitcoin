@@ -3562,6 +3562,20 @@ namespace NBitcoin.Tests
 
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
+		public void raw_pubkey_format_rejects_off_curve_coordinates()
+		{
+			Assert.False(ECPubKey.TryCreateRawFormat(new byte[64], ctx, out var invalid));
+			Assert.Null(invalid);
+
+			var generator = Encoders.Hex.DecodeData(
+				"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" +
+				"483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8");
+			Assert.True(ECPubKey.TryCreateRawFormat(generator, ctx, out var valid));
+			Assert.NotNull(valid);
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
 		public void test_xonly_pubkey_comparison()
 		{
 			byte[] pk1_ser = new byte[32] {
@@ -3821,7 +3835,10 @@ namespace NBitcoin.Tests
 					var schnorrSig = musig[0].AggregateSignatures(sigs);
 
 					if (useAdaptor)
+					{
 						schnorrSig = musig[0].Adapt(schnorrSig, adaptor);
+						Assert.Equal(adaptor, musig[0].Extract(schnorrSig, sigs));
+					}
 					// Verify resulting signature
 					// SigningPubKey is the tweaked key if tweaked, or the combined key if not
 					Assert.True(musig[0].AggregatePubKey.ToXOnlyPubKey().SigVerifyBIP340(schnorrSig, msg32));
@@ -4031,6 +4048,39 @@ namespace NBitcoin.Tests
 				Assert.True(ctx.Verify(sk.CreatePubKey(), sig.PubNonce, sig.Signature));
 			}
 		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void musig_deterministic_nonce_binds_adaptor()
+		{
+			var keys = Enumerable.Range(0, 2).Select(_ => new ECPrivKey(random_scalar_order(), ctx, true)).ToArray();
+			var pubKeys = keys.Select(k => k.CreatePubKey()).ToArray();
+			var msg = RandomUtils.GetBytes(32);
+			var otherContext = new MusigContext(pubKeys, msg, pubKeys[0]);
+			var otherNonce = otherContext.GenerateNonce(0, keys[0]).CreatePubNonce();
+			var adaptorScalar = random_scalar_order();
+			var adaptor = ctx.CreateECPrivKey(adaptorScalar).CreatePubKey();
+			var negatedAdaptor = ctx.CreateECPrivKey(adaptorScalar.Negate()).CreatePubKey();
+
+			MusigPubNonce GeneratePubNonce(ECPubKey adaptorPoint)
+			{
+				var musig = new MusigContext(pubKeys, msg, pubKeys[1]);
+				if (adaptorPoint is not null)
+					musig.UseAdaptor(adaptorPoint);
+				musig.Process(otherNonce);
+				musig = musig.Clone();
+				return musig.DeterministicSign(keys[1]).PubNonce;
+			}
+
+			var withoutAdaptor = GeneratePubNonce(null);
+			var withAdaptor = GeneratePubNonce(adaptor);
+			var withNegatedAdaptor = GeneratePubNonce(negatedAdaptor);
+
+			Assert.Equal(adaptor.ToXOnlyPubKey(), negatedAdaptor.ToXOnlyPubKey());
+			Assert.NotEqual(Encoders.Hex.EncodeData(withoutAdaptor.ToBytes()), Encoders.Hex.EncodeData(withAdaptor.ToBytes()));
+			Assert.NotEqual(Encoders.Hex.EncodeData(withAdaptor.ToBytes()), Encoders.Hex.EncodeData(withNegatedAdaptor.ToBytes()));
+		}
+
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
 		// https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#modifications-to-nonce-generation

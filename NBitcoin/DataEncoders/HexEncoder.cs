@@ -52,13 +52,20 @@ namespace NBitcoin.DataEncoders
 		private static readonly string[] HexTbl = Enumerable.Range(0, 256).Select(v => v.ToString("x2")).ToArray();
 #endif
 
+#if NET10_0_OR_GREATER
+		public override string EncodeData(ReadOnlySpan<byte> data)
+		{
+			return Convert.ToHexStringLower(data);
+		}
+#endif
+
 		public override string EncodeData(byte[] data, int offset, int count)
 		{
 			if (data == null)
 				throw new ArgumentNullException(nameof(data));
 
-#if NET6_0_OR_GREATER
-			return Convert.ToHexString(data, offset, count).ToLowerInvariant();
+#if NET10_0_OR_GREATER
+			return Convert.ToHexStringLower(data.AsSpan(offset, count));
 #elif !HAS_SPAN
 			int pos = 0;
 			var s = new char[2 * count];
@@ -98,6 +105,10 @@ namespace NBitcoin.DataEncoders
 		{
 			if (encoded == null)
 				throw new ArgumentNullException(nameof(encoded));
+
+#if NET10_0_OR_GREATER
+			return Convert.FromHexString(encoded);
+#else
 			if (encoded.Length % 2 == 1)
 				throw new FormatException("Invalid Hex String");
 
@@ -111,6 +122,7 @@ namespace NBitcoin.DataEncoders
 				result[j] = (byte)((hi << 4) | lo);
 			}
 			return result;
+#endif
 		}
 #if HAS_SPAN
 		public void DecodeData(string encoded, Span<byte> output)
@@ -121,6 +133,12 @@ namespace NBitcoin.DataEncoders
 				throw new FormatException("Invalid Hex String");
 			if (output.Length < (encoded.Length >> 1))
 				throw new ArgumentException("output should be bigger", nameof(output));
+
+#if NET10_0_OR_GREATER
+			var result = Convert.FromHexString(encoded, output, charsConsumed: out _, bytesWritten: out _);
+			if (result != System.Buffers.OperationStatus.Done)
+				throw new FormatException($"Decoding HEX failed with {result}");
+#else
 			try
 			{
 				for (int i = 0, j = 0; i < encoded.Length; i += 2, j++)
@@ -133,6 +151,7 @@ namespace NBitcoin.DataEncoders
 				}
 			}
 			catch(IndexOutOfRangeException) { throw new FormatException("Invalid Hex String"); }
+#endif
 		}
 #endif
 		public bool IsValid(string str)
@@ -158,7 +177,7 @@ namespace NBitcoin.DataEncoders
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		static byte IsDigitCore(char c)
 		{
-			return CharToHexLookup[c];
+			return c < 256 ? CharToHexLookup[c] : (byte)0xff;
 		}
 
 		public static bool IsWellFormed(string str)

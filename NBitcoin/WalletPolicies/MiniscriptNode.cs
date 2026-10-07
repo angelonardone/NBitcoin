@@ -25,6 +25,8 @@ namespace NBitcoin.WalletPolicies
 {
 	public class FragmentDescriptor
 	{
+		internal const int MaxCheckMultiSigPubKeys = 20;
+
 		public bool IsOr() =>
 			this == or_b ||
 			this == or_c ||
@@ -40,6 +42,12 @@ namespace NBitcoin.WalletPolicies
 			this == hash256 ||
 			this == hash160;
 		private static Op HASH160(List<Op> node) => Op.GetPushOp(Hashes.Hash160(node[0].PushData).ToBytes());
+		private static void AssertCheckMultiSigPubKeyCount(List<Op>[] v)
+		{
+			var pubKeyCount = v.Length - 1;
+			if (pubKeyCount > MaxCheckMultiSigPubKeys)
+				throw new InvalidOperationException($"CHECKMULTISIG supports at most {MaxCheckMultiSigPubKeys} public keys.");
+		}
 		FragmentDescriptor(string name,
 			Action<List<Op>[], List<Op>> addOps)
 		{
@@ -172,6 +180,7 @@ namespace NBitcoin.WalletPolicies
 			"multi",
 			(v, ops) =>
 			{
+				AssertCheckMultiSigPubKeyCount(v);
 				int i = 0;
 				while (i < v.Length)
 				{
@@ -184,6 +193,7 @@ namespace NBitcoin.WalletPolicies
 			"sortedmulti",
 			(v, ops) =>
 			{
+				AssertCheckMultiSigPubKeyCount(v);
 				var pks = new byte[v.Length - 1][];
 				for (int i = 1; i < v.Length; i++)
 				{
@@ -463,7 +473,12 @@ namespace NBitcoin.WalletPolicies
 				}
 		
 				// musig(KEY, KEY, ..., KEY)
-				using var frame = ctx.PushFrame();
+				if (!ctx.TryPushFrame(out var frame))
+				{
+					error = new MiniscriptError.TooDeep(ctx.Offset);
+					return false;
+				}
+				using var _ = frame;
 				frame.FragmentIndex = ctx.Offset;
 				var initialKeyType = ctx.ExpectedKeyType;
 				var wasNested = ctx.NetstedMusig;
@@ -856,6 +871,19 @@ namespace NBitcoin.WalletPolicies
 				public sealed override string ToString()
 				{
 					return "A LockTimeValue is expected";
+				}
+			}
+			public record RelativeLocktime : ParameterRequirement
+			{
+				public readonly static RelativeLocktime Instance = new();
+				public override bool Check(MiniscriptNode node)
+				{
+					return node is Value.LockTimeValue locktime && locktime.LockTime.Value != 0 &&
+						(locktime.LockTime.Value & NBitcoin.Sequence.SEQUENCE_LOCKTIME_DISABLE_FLAG) == 0;
+				}
+				public sealed override string ToString()
+				{
+					return "A relative LockTimeValue between 1 and 2147483647 is expected";
 				}
 			}
 		}

@@ -136,6 +136,7 @@ namespace NBitcoin.Tests
 		private ChainedBlock CreateBlock(DateTimeOffset now, int offset, ChainBase chain = null)
 		{
 			Block b = Consensus.Main.ConsensusFactory.CreateBlock();
+			b.Header.BlockTime = now.AddSeconds(offset);
 			if (chain != null)
 			{
 				b.Header.HashPrevBlock = chain.Tip.HashBlock;
@@ -188,6 +189,23 @@ namespace NBitcoin.Tests
 			Assert.True(tx.IsFinal(time - TimeSpan.FromSeconds(1), 0));
 			tx.Inputs[0].Sequence = 1;
 			//////////
+
+			var chain = new ConcurrentChain(Network.Main);
+			var medianTime = new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+			for (int i = -5; i <= 5; i++)
+				chain.SetTip(CreateBlock(medianTime, i, chain));
+			var candidate = CreateBlock(medianTime, 10_000, chain);
+			var headerOnlyCandidate = new ChainedBlock(candidate.Header, candidate.Height);
+			tx.LockTime = LockTime.Zero;
+			Assert.True(tx.IsFinal(headerOnlyCandidate));
+			tx.LockTime = new LockTime(candidate.Height - 1);
+			Assert.True(tx.IsFinal(headerOnlyCandidate));
+			tx.LockTime = new LockTime(candidate.Height);
+			Assert.False(tx.IsFinal(headerOnlyCandidate));
+			tx.LockTime = new LockTime(medianTime.AddSeconds(1));
+			Assert.False(tx.IsFinal(candidate));
+			Assert.True(tx.IsFinal(candidate.Header.BlockTime, candidate.Height));
+			Assert.Throws<InvalidOperationException>(() => tx.IsFinal(headerOnlyCandidate));
 		}
 
 		private OutPoint CanParseOutpointCore(string str, bool valid)
@@ -1113,6 +1131,34 @@ namespace NBitcoin.Tests
 				txbuilder.SetChange(change);
 				Assert.Throws<OutputTooSmallException>(() => txbuilder.BuildTransaction(false));
 			}
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void TransactionBuilderRefundsFeeAfterMergingOutputs()
+		{
+			var sender = new Key().PubKey.GetScriptPubKey(ScriptPubKeyType.Segwit);
+			var destination = new Key();
+			var c1 = new Coin(new OutPoint(uint256.Zero, 0), new TxOut(Money.Coins(1.0m), sender));
+			var c2 = new Coin(new OutPoint(uint256.Zero, 1), new TxOut(Money.Coins(2.0m), sender));
+			var selector = new SpyCoinSelector();
+			selector.AddSelections(new[] { c1, c2 });
+			selector.AddSelections(new[] { c1 });
+
+			var feeRate = new FeeRate(5.0m);
+			var builder = Network.Main.CreateTransactionBuilder()
+				.AddCoins(c1, c2)
+				.SetCoinSelector(selector)
+				.Send(destination, Money.Coins(0.5m))
+				.SetChange(destination)
+				.SendEstimatedFees(feeRate);
+
+			var tx = builder.BuildTransaction(false);
+			var expectedFee = feeRate.GetFee(builder.EstimateSize(tx, true));
+
+			Assert.Single(tx.Outputs);
+			Assert.Equal(expectedFee, tx.GetFee(builder.FindSpentCoins(tx)));
+			Assert.Equal(c1.Amount - expectedFee, tx.Outputs[0].Value);
 		}
 
 		[Fact]
@@ -4022,9 +4068,6 @@ namespace NBitcoin.Tests
 				CheckFee = false,
 				MinRelayTxFee = null,
 				CheckDust = false,
-#if !NOCONSENSUSLIB
-				UseConsensusLib = false,
-#endif
 				CheckScriptPubKey = false
 			};
 
