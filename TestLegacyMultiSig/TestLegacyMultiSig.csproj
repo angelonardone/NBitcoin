@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\NBitcoin\NBitcoin.csproj" />
+    <ProjectReference Include="..\NBitcoin.TestFramework\NBitcoin.TestFramework.csproj" />
+    <ProjectReference Include="..\DistricutedCryptographyLib\DistricutedCryptographyLib.csproj" />
   </ItemGroup>
 
 </Project>

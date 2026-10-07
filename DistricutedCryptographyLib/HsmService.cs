@@ -82,13 +82,21 @@ namespace DistricutedCryptographyLib
 		}
 
 
+		// HSM child keys are HARDENED (index'): with non-hardened children, the HSM ext pubkey plus ONE leaked child private
+		// key would reveal the HSM ext private key (BIP32). Hardened children cannot be walked back to the parent.
+		private static ExtKey DeriveChild(ExtKey extKey, int index)
+		{
+			if (index < 0) throw new ArgumentOutOfRangeException(nameof(index));
+			return extKey.Derive(index, true);
+		}
+
 		public string GetDerivedPublicKey(int index)
 		{
 			try
 			{
 				ExtKey extKey = DecryptKey();
 				_lastError = "";
-				 return extKey.Derive((uint)index).PrivateKey.PubKey.ToString();
+				 return DeriveChild(extKey, index).PrivateKey.PubKey.ToString();
 			}
 			catch (Exception ex)
 			{
@@ -104,7 +112,7 @@ namespace DistricutedCryptographyLib
 				ExtKey extKey = DecryptKey();
 				_lastError = "";
 
-				var key = extKey.Derive((uint)index).PrivateKey;
+				var key = DeriveChild(extKey, index).PrivateKey;
 
 				byte[] msgBytes = System.Text.Encoding.UTF8.GetBytes(message);
 				uint256 msgHash = NBitcoin.Crypto.Hashes.DoubleSHA256(msgBytes);
@@ -125,7 +133,7 @@ namespace DistricutedCryptographyLib
 				ExtKey extKey = DecryptKey();
 				_lastError = "";
 
-				var key = extKey.Derive((uint)index).PrivateKey;
+				var key = DeriveChild(extKey, index).PrivateKey;
 
 				byte[] msgBytes = System.Text.Encoding.UTF8.GetBytes(message);
 				uint256 msgHash = NBitcoin.Crypto.Hashes.DoubleSHA256(msgBytes);
@@ -162,7 +170,7 @@ namespace DistricutedCryptographyLib
 				ExtKey extKey = DecryptKey();
 				_lastError = "";
 
-				PubKey publicKey = extKey.Derive((uint)index).PrivateKey.PubKey;
+				PubKey publicKey = DeriveChild(extKey, index).PrivateKey.PubKey;
 
 				return publicKey.Encrypt(message);
 			}
@@ -183,7 +191,7 @@ namespace DistricutedCryptographyLib
 				ExtKey extKey = DecryptKey();
 				_lastError = "";
 
-				var key = extKey.Derive((uint)index).PrivateKey;
+				var key = DeriveChild(extKey, index).PrivateKey;
 				return key.Decrypt(payload);
 
 			}

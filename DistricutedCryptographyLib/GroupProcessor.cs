@@ -30,6 +30,45 @@ namespace DistricutedCryptographyLib
 			return Clone(_group);
 		}
 
+		// ---------------------------------------------------------------------
+		// "Legacy Multisignature" — SegWit P2SH-P2WSH N-of-M, driven by the held group.
+		// Thin wrappers over LegacyMultiSig so GeneXus only deals with primitive params/returns
+		// (all complex crypto stays in the library). Call FromSDT() first to load the group.
+		// ---------------------------------------------------------------------
+
+		// Build the N-of-M SegWit address for the loaded group at the given HD sequence on the
+		// receiving chain (isChange=false) or the change chain (isChange=true).
+		public string CreateLegacyAddress(int sequence, bool isChange, string networkType)
+		{
+			return LegacyMultiSig.CreateAddress(_group, sequence, isChange, networkType);
+		}
+
+		// Build the unsigned spending PSBT (base64) for the loaded group. isChange selects the chain
+		// the spent (input) multisig addresses were derived on.
+		public string BuildLegacyPsbt(string utxosJson, string sendTo, string amountBtc,
+			string changeAddr, string feeBtc, bool sendAll, int sequence, bool isChange, string networkType)
+		{
+			return LegacyMultiSig.BuildPsbt(_group, utxosJson, sendTo, amountBtc, changeAddr, feeBtc, sendAll, sequence, isChange, networkType);
+		}
+
+		// Sign a PSBT with one member's chain-level extended private key (derived at the given sequence).
+		public string SignLegacyPsbt(string psbtBase64, int sequence, string signerExtPrivKey, string networkType)
+		{
+			return LegacyMultiSig.SignPsbt(psbtBase64, sequence, signerExtPrivKey, networkType);
+		}
+
+		// Combine several partially-signed PSBTs (JSON array of base64) into one.
+		public string CombineLegacyPsbts(string psbtsJson, string networkType)
+		{
+			return LegacyMultiSig.CombinePsbts(psbtsJson, networkType);
+		}
+
+		// Finalize a (combined) PSBT and extract the broadcastable raw transaction.
+		public string FinalizeLegacyPsbt(string psbtBase64, string networkType)
+		{
+			return LegacyMultiSig.Finalize(psbtBase64, networkType);
+		}
+
 		private static GroupSDT Clone(GroupSDT source)
 		{
 			if (source == null)
