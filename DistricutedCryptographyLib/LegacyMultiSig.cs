@@ -20,6 +20,10 @@ namespace DistricutedCryptographyLib
 	/// at the given HD <c>sequence</c> on the selected chain (<c>isChange</c>), so a fresh multisig
 	/// address can be produced for each index, exactly like the Delegated wallet does.
 	///
+	/// The public keys go into the script in lexicographic order (BIP67), so the address does not depend on
+	/// the order of the members and the group is the standard descriptor
+	/// <c>sh(wsh(sortedmulti(k, xpub/*, ...)))</c> (BIP383), which other wallets import: see GetDescriptor.
+	///
 	/// Every method returns a JSON string (never throws toward GeneXus): on success
 	/// <c>{ "success": true, "error": "", ... }</c>, on failure <c>{ "success": false, "error": "..." }</c>.
 	/// Distributed signing uses PSBT (BIP174) as the interchange artifact: build once, each member
@@ -67,6 +71,34 @@ namespace DistricutedCryptographyLib
 					n = ms.SignerPubKeys.Count,
 					isChange,
 					sequence
+				});
+			}
+			catch (Exception e) { return Err(e); }
+		}
+
+		/// <summary>
+		/// The ranged output descriptor of one chain of the group (receiving or change), with its checksum:
+		/// its address number i is CreateAddress(i). A descriptor wallet (Bitcoin Core, Sparrow) derives the
+		/// same addresses from it and can watch the group without this library. Only public keys.
+		/// </summary>
+		public static string GetDescriptor(GroupSDT group, bool isChange, string networkType)
+		{
+			try
+			{
+				var net = GetNetwork(networkType);
+				var xpubs = ParticipantXpubs(group, isChange);
+				CheckParticipants(group, xpubs.Count, isChange ? "change" : "receiving");
+				var keys = xpubs.Select(xpub => ExtPubKey.Parse(xpub, net).ToString(net) + "/*");
+				var descriptor = NBitcoin.WalletPolicies.Miniscript.AddChecksum(
+					$"sh(wsh(sortedmulti({group.MinimumShares},{string.Join(",", keys)})))");
+				return JsonSerializer.Serialize(new
+				{
+					success = true,
+					error = "",
+					descriptor,
+					k = (int)group.MinimumShares,
+					n = xpubs.Count,
+					isChange
 				});
 			}
 			catch (Exception e) { return Err(e); }
@@ -197,32 +229,37 @@ namespace DistricutedCryptographyLib
 			if (group == null)
 				throw new Exception("Group is null (call FromSDT first)");
 
-			var chain = isChange ? "change" : "receiving";
 			var pubKeys = ParticipantPubKeys(group, sequence, isChange, net);
-			if (pubKeys.Count < 2)
+			CheckParticipants(group, pubKeys.Count, isChange ? "change" : "receiving");
+			return new SegWitMultiSig(pubKeys, group.MinimumShares, net);
+		}
+
+		private static void CheckParticipants(GroupSDT group, int count, string chain)
+		{
+			if (count < 2)
 				throw new Exception($"At least 2 participants (owner + contacts) with a {chain} extended public key are required");
 
 			// OP_CHECKMULTISIG / P2SH-P2WSH hard cap: an N-of-M multisig supports at most 16 signers
 			// (OP_16). Reject early with a clear message instead of letting NBitcoin throw deep down.
-			if (pubKeys.Count > 16)
-				throw new Exception($"Too many participants ({pubKeys.Count}); a Legacy SegWit P2SH-P2WSH multisig supports at most 16 (owner + contacts)");
+			if (count > 16)
+				throw new Exception($"Too many participants ({count}); a Legacy SegWit P2SH-P2WSH multisig supports at most 16 (owner + contacts)");
 
 			int k = group.MinimumShares;
-			if (k <= 0 || k > pubKeys.Count)
-				throw new Exception($"Invalid MinimumShares ({k}) for {pubKeys.Count} participants");
-
-			return new SegWitMultiSig(pubKeys, k, net);
+			if (k <= 0 || k > count)
+				throw new Exception($"Invalid MinimumShares ({k}) for {count} participants");
 		}
 
 		// Participants = owner + every contact, each contributing their chain-level extended public key
-		// (ExtPubKeyMultiSigReceiving when isChange=false, ExtPubKeyMultiSigChange when true), derived
-		// (non-hardened) at the given sequence. Order is deterministic: owner first.
-		private static List<PubKey> ParticipantPubKeys(GroupSDT group, int sequence, bool isChange, Network net)
+		// (ExtPubKeyMultiSigReceiving when isChange=false, ExtPubKeyMultiSigChange when true).
+		private static List<string> ParticipantXpubs(GroupSDT group, bool isChange)
 		{
+			if (group == null)
+				throw new Exception("Group is null (call FromSDT first)");
+
 			var xpubs = new List<string>();
 			var ownerXpub = isChange ? group.ExtPubKeyMultiSigChange : group.ExtPubKeyMultiSigReceiving;
 			if (!string.IsNullOrWhiteSpace(ownerXpub))
-				xpubs.Add(ownerXpub!);
+				xpubs.Add(ownerXpub!.Trim());
 
 			if (group.Contact != null)
 			{
@@ -231,17 +268,20 @@ namespace DistricutedCryptographyLib
 					if (c == null) continue;
 					var contactXpub = isChange ? c.ExtPubKeyMultiSigChange : c.ExtPubKeyMultiSigReceiving;
 					if (!string.IsNullOrWhiteSpace(contactXpub))
-						xpubs.Add(contactXpub!);
+						xpubs.Add(contactXpub!.Trim());
 				}
 			}
+			return xpubs;
+		}
 
-			var pubKeys = new List<PubKey>();
-			foreach (var xpub in xpubs)
-			{
-				var epk = ExtPubKey.Parse(xpub.Trim(), net);
-				pubKeys.Add(epk.Derive((uint)sequence).PubKey);
-			}
-			return pubKeys;
+		// The participants' public keys at the given sequence (non-hardened child of each chain-level key),
+		// in lexicographic order of the compressed key (BIP67 / sortedmulti): the order they have in the script.
+		private static List<PubKey> ParticipantPubKeys(GroupSDT group, int sequence, bool isChange, Network net)
+		{
+			return ParticipantXpubs(group, isChange)
+				.Select(xpub => ExtPubKey.Parse(xpub, net).Derive((uint)sequence).PubKey)
+				.OrderBy(pubKey => pubKey.ToHex(), StringComparer.Ordinal)
+				.ToList();
 		}
 
 		private static Network GetNetwork(string networkType)

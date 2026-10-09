@@ -12,6 +12,10 @@ using DistricutedCryptographyLib;
 // GeneXus will use it. Proves: build address -> fund -> each member signs their own PSBT
 // copy -> combine -> finalize -> broadcast -> confirm, on a real regtest node.
 
+// Offline checks of the Delegated multisig with pre-signed fee levels: see DelegatedSpike.cs.
+if (args.Length > 0 && args[0].StartsWith("delegated"))
+	return DelegatedSpike.Run(args);
+
 // Offline mode: print the CreateLegacyAddress JSON for a fixed set of xpubs (used to produce
 // the deterministic expected address for the GeneXus unit test). No regtest node needed.
 if (args.Length > 0 && args[0] == "vector")

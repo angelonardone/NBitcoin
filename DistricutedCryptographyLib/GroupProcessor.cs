@@ -43,6 +43,13 @@ namespace DistricutedCryptographyLib
 			return LegacyMultiSig.CreateAddress(_group, sequence, isChange, networkType);
 		}
 
+		// The ranged output descriptor, sh(wsh(sortedmulti(k, xpub/*, ...))), of the receiving or the change
+		// chain of the loaded group: other wallets derive the same addresses from it.
+		public string GetLegacyDescriptor(bool isChange, string networkType)
+		{
+			return LegacyMultiSig.GetDescriptor(_group, isChange, networkType);
+		}
+
 		// Build the unsigned spending PSBT (base64) for the loaded group. isChange selects the chain
 		// the spent (input) multisig addresses were derived on.
 		public string BuildLegacyPsbt(string utxosJson, string sendTo, string amountBtc,

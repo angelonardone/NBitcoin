@@ -96,7 +96,16 @@ namespace NBitcoin
 		private readonly List<TapScript> _scripts;
 		private readonly Dictionary<string, int[]> _scriptToSignerIndices;
 
+		/// <summary>
+		/// Builds the multisig from plain public keys. The signers are put in a canonical order (sorted as
+		/// x-only keys, like BIP387 sortedmulti_a), so the result does not depend on the order they are given in.
+		/// </summary>
 		public DelegatedMultiSig(PubKey ownerPubKey, List<PubKey> signerPubKeys, int requiredSignatures, Network network)
+			: this(ownerPubKey, signerPubKeys, requiredSignatures, network, sortSigners: true)
+		{
+		}
+
+		private DelegatedMultiSig(PubKey ownerPubKey, List<PubKey> signerPubKeys, int requiredSignatures, Network network, bool sortSigners)
 		{
 			if (ownerPubKey == null)
 				throw new ArgumentNullException(nameof(ownerPubKey));
@@ -106,9 +115,14 @@ namespace NBitcoin
 				throw new ArgumentException($"Required signatures must be between 1 and {signerPubKeys.Count}", nameof(requiredSignatures));
 			if (network == null)
 				throw new ArgumentNullException(nameof(network));
+			// a script holds x-only keys: two keys with the same x coordinate are the same key there
+			if (signerPubKeys.Select(XOnlyHex).Distinct().Count() != signerPubKeys.Count)
+				throw new ArgumentException("The signer public keys must be different", nameof(signerPubKeys));
 
 			_ownerPubKey = ownerPubKey;
-			_signerPubKeys = signerPubKeys.OrderBy(p => p.ToHex()).ToList();
+			_signerPubKeys = sortSigners
+				? signerPubKeys.OrderBy(XOnlyHex, StringComparer.Ordinal).ToList()
+				: signerPubKeys.ToList();
 			_requiredSignatures = requiredSignatures;
 			_network = network;
 			_scripts = new List<TapScript>();
@@ -117,6 +131,30 @@ namespace NBitcoin
 			GenerateScripts();
 			CreateTaprootSpendInfo();
 		}
+
+		/// <summary>
+		/// Builds the multisig of an HD wallet at one address index: every key is the child <paramref name="index"/>
+		/// of its extended public key. The signers keep ONE order for every index (the order of their extended
+		/// public keys, see <see cref="SortExtPubKeys"/>), so the whole wallet is described by the single ranged
+		/// descriptor of <see cref="GetRangedDescriptor"/>, which any descriptor wallet can import.
+		/// </summary>
+		public static DelegatedMultiSig FromExtPubKeys(ExtPubKey ownerExtPubKey, IEnumerable<ExtPubKey> signerExtPubKeys, int requiredSignatures, uint index, Network network)
+		{
+			if (ownerExtPubKey == null)
+				throw new ArgumentNullException(nameof(ownerExtPubKey));
+			if (signerExtPubKeys == null)
+				throw new ArgumentNullException(nameof(signerExtPubKeys));
+			var signerPubKeys = SortExtPubKeys(signerExtPubKeys).Select(extPubKey => extPubKey.Derive(index).PubKey).ToList();
+			return new DelegatedMultiSig(ownerExtPubKey.Derive(index).PubKey, signerPubKeys, requiredSignatures, network, sortSigners: false);
+		}
+
+		/// <summary>The canonical order of the signers of an HD wallet: by the bytes of the extended public key.</summary>
+		public static List<ExtPubKey> SortExtPubKeys(IEnumerable<ExtPubKey> extPubKeys)
+		{
+			return extPubKeys.OrderBy(extPubKey => Encoders.Hex.EncodeData(extPubKey.ToBytes()), StringComparer.Ordinal).ToList();
+		}
+
+		private static string XOnlyHex(PubKey pubKey) => Encoders.Hex.EncodeData(pubKey.TaprootInternalKey.ToBytes());
 
 		public TaprootAddress Address => TaprootPubKey.GetAddress(_network);
 
@@ -143,9 +181,13 @@ namespace NBitcoin
 			{
 				var scriptBuilder = new Script();
 
-				for (int i = 0; i < combination.Length; i++)
+				// BIP387 sortedmulti_a: inside a script the keys go in x-only order. scriptOrder = the signers of
+				// this combination in the order of their keys in the script.
+				var scriptOrder = combination.OrderBy(index => XOnlyHex(_signerPubKeys[index]), StringComparer.Ordinal).ToArray();
+
+				for (int i = 0; i < scriptOrder.Length; i++)
 				{
-					var signerIndex = combination[i];
+					var signerIndex = scriptOrder[i];
 #if HAS_SPAN
 					var xOnlyPubKey = _signerPubKeys[signerIndex].TaprootPubKey;
 					scriptBuilder = scriptBuilder + Op.GetPushOp(xOnlyPubKey.ToBytes());
@@ -177,15 +219,78 @@ namespace NBitcoin
 
 				var tapScript = scriptBuilder.ToTapScript(TapLeafVersion.C0);
 				_scripts.Add(tapScript);
-				_scriptToSignerIndices[tapScript.LeafHash.ToString()] = combination;
+				_scriptToSignerIndices[tapScript.LeafHash.ToString()] = scriptOrder;
 			}
 		}
 
+		// The tree is DEFINED, so anybody can rebuild the address: the scripts are the leaves in the order of
+		// their combinations (lexicographic over the signer order), and tree(S) = S when S is one script,
+		// else the branch { tree(first half of S, rounded up), tree(the rest) }. Every script is at depth
+		// ceil(log2(count)) or one less. (A Huffman tree with equal weights has no defined shape: it depends
+		// on how the priority queue breaks the ties.)
 		private void CreateTaprootSpendInfo()
 		{
-			var scriptWeights = _scripts.Select(s => (1u, s)).ToArray();
-			var internalKey = _ownerPubKey.TaprootInternalKey;
-			_taprootSpendInfo = TaprootSpendInfo.WithHuffmanTree(internalKey, scriptWeights);
+			var builder = new TaprootBuilder();
+			AddSubTree(builder, 0, _scripts.Count, 0);
+			_taprootSpendInfo = builder.Finalize(_ownerPubKey.TaprootInternalKey);
+		}
+
+		private void AddSubTree(TaprootBuilder builder, int start, int count, uint depth)
+		{
+			if (count == 1)
+			{
+				builder.AddLeaf(depth, _scripts[start]);
+				return;
+			}
+			var left = (count + 1) / 2;
+			AddSubTree(builder, start, left, depth + 1);
+			AddSubTree(builder, start + left, count - left, depth + 1);
+		}
+
+		// The same tree written as a descriptor (BIP386): "leaf" or "{left,right}".
+		private static string TreeExpression(IReadOnlyList<string> leaves, int start, int count)
+		{
+			if (count == 1)
+				return leaves[start];
+			var left = (count + 1) / 2;
+			return "{" + TreeExpression(leaves, start, left) + "," + TreeExpression(leaves, start + left, count - left) + "}";
+		}
+
+		/// <summary>
+		/// The output descriptor of this address (BIP386 tr() with one BIP387 multi_a script per combination),
+		/// with its checksum. Bitcoin Core derives the same address from it (deriveaddresses).
+		/// </summary>
+		public string GetDescriptor()
+		{
+			var leaves = new List<string>(_scripts.Count);
+			foreach (var script in _scripts)
+			{
+				var keys = _scriptToSignerIndices[script.LeafHash.ToString()].Select(index => XOnlyHex(_signerPubKeys[index]));
+				leaves.Add($"multi_a({_requiredSignatures},{string.Join(",", keys)})");
+			}
+			return NBitcoin.WalletPolicies.Miniscript.AddChecksum($"tr({XOnlyHex(_ownerPubKey)},{TreeExpression(leaves, 0, leaves.Count)})");
+		}
+
+		/// <summary>
+		/// The ranged output descriptor of a whole HD wallet built with <see cref="FromExtPubKeys"/>: its address
+		/// number i is FromExtPubKeys(..., i, ...).Address. With it the wallet can be watched and recovered in
+		/// any wallet that understands descriptors, without this library.
+		/// </summary>
+		public static string GetRangedDescriptor(ExtPubKey ownerExtPubKey, IEnumerable<ExtPubKey> signerExtPubKeys, int requiredSignatures, Network network)
+		{
+			if (ownerExtPubKey == null)
+				throw new ArgumentNullException(nameof(ownerExtPubKey));
+			if (signerExtPubKeys == null)
+				throw new ArgumentNullException(nameof(signerExtPubKeys));
+			if (network == null)
+				throw new ArgumentNullException(nameof(network));
+			var signers = SortExtPubKeys(signerExtPubKeys).Select(extPubKey => extPubKey.ToString(network) + "/*").ToList();
+			if (requiredSignatures < 1 || requiredSignatures > signers.Count)
+				throw new ArgumentException($"Required signatures must be between 1 and {signers.Count}", nameof(requiredSignatures));
+			var leaves = GetCombinations(signers.Count, requiredSignatures)
+				.Select(combination => $"sortedmulti_a({requiredSignatures},{string.Join(",", combination.Select(index => signers[index]))})")
+				.ToList();
+			return NBitcoin.WalletPolicies.Miniscript.AddChecksum($"tr({ownerExtPubKey.ToString(network)}/*,{TreeExpression(leaves, 0, leaves.Count)})");
 		}
 
 		private static double CalculateCombinationCount(int n, int k)
@@ -208,49 +313,12 @@ namespace NBitcoin
 			return result;
 		}
 
+		// The k-combinations of the signers 0..n-1 in lexicographic order. The order is part of the address
+		// (it fixes the place of every script in the tree), so it must never depend on n or k.
 		private static List<int[]> GetCombinations(int n, int k)
 		{
-			// Handle edge cases first
 			if (k == 0) return new List<int[]>();
-			if (k == n)
-			{
-				// n-of-n: only one combination (all participants)
-				var allElements = new int[n];
-				for (int i = 0; i < n; i++)
-					allElements[i] = i;
-				return new List<int[]> { allElements };
-			}
-			
-			// Apply combinatorial symmetry optimization: C(n,k) = C(n,n-k)
-			// For k > n/2, generate (n-k)-combinations and use their complements
-			// This reduces memory usage and generation time for large k values
-			bool useComplement = k > n - k;
-			int effectiveK = useComplement ? n - k : k;
-			
-			var baseCombinations = GetCombinationsBase(n, effectiveK);
-			
-			if (useComplement)
-			{
-				// Convert each small combination to its complement
-				var result = new List<int[]>();
-				foreach (var combination in baseCombinations)
-				{
-					var complement = new int[k];
-					var combinationSet = new HashSet<int>(combination);
-					int complementIndex = 0;
-					
-					for (int i = 0; i < n; i++)
-					{
-						if (!combinationSet.Contains(i))
-							complement[complementIndex++] = i;
-					}
-					
-					result.Add(complement);
-				}
-				return result;
-			}
-			
-			return baseCombinations;
+			return GetCombinationsBase(n, k);
 		}
 		
 		private static List<int[]> GetCombinationsBase(int n, int k)
@@ -311,8 +379,8 @@ namespace NBitcoin
 		public static TaprootAddress CreateAddress(ExtPubKey ownerExtPubKey, uint ownerDerivation, List<ExtPubKey> signerExtPubKeys, uint signerDerivation, int requiredSignatures, Network network)
 		{
 			var ownerPubKey = ownerExtPubKey.Derive(ownerDerivation).PubKey;
-			var signerPubKeys = signerExtPubKeys.Select(extPubKey => extPubKey.Derive(signerDerivation).PubKey).ToList();
-			return CreateAddress(ownerPubKey, signerPubKeys, requiredSignatures, network);
+			var signerPubKeys = SortExtPubKeys(signerExtPubKeys).Select(extPubKey => extPubKey.Derive(signerDerivation).PubKey).ToList();
+			return new DelegatedMultiSig(ownerPubKey, signerPubKeys, requiredSignatures, network, sortSigners: false).Address;
 		}
 
 		public DelegatedMultiSigSignatureBuilder CreateSignatureBuilder(Transaction transaction, ICoin[] spentCoins, bool isDynamicFeeMode = false)
@@ -543,7 +611,7 @@ namespace NBitcoin
 		/// &lt;compact_size:identifier_len&gt;  // Length of identifier (5)
 		/// "DMSIG"                        // Identifier (5 ASCII bytes)
 		/// &lt;compact_size:scriptIndex&gt;     // Which script combination was used
-		/// &lt;byte:signerIndex&gt;             // Which signer created this signature
+		/// &lt;compact_size:signerIndex&gt;     // Which signer created this signature
 		/// </code>
 		/// <para>The PSBT can be serialized with ToBase64() and transmitted to other signers.</para>
 		/// <para>Each signer can call SignPSBT on the deserialized PSBT to add their signatures.</para>
@@ -587,7 +655,7 @@ namespace NBitcoin
 			// Proprietary key components
 			var identifier = System.Text.Encoding.ASCII.GetBytes("DMSIG"); // 5 bytes
 			var subtype = (ulong)sig.ScriptIndex;
-			var keyData = new byte[] { (byte)sig.SignerIndex };
+			var keyData = GetCompactSizeBytes((ulong)sig.SignerIndex);
 
 			// Build BIP 174 compliant proprietary key
 			var keyBytes = new List<byte>();
@@ -624,47 +692,7 @@ namespace NBitcoin
 		/// </remarks>
 		private bool IsComplete(PSBT psbt, int inputIndex = 0)
 		{
-			var inputPSBT = psbt.Inputs[inputIndex];
-			var uniqueSigners = new HashSet<byte>();
-
-			foreach (var kvp in inputPSBT.Unknown)
-			{
-				var key = kvp.Key;
-				if (key.Length < 2 || key[0] != 0xFC)
-					continue;
-
-				try
-				{
-					int offset = 1;
-					var idLen = ReadCompactSizeFromBytes(key, ref offset);
-					if (offset + (int)idLen > key.Length)
-						continue;
-
-					var identifier = new byte[idLen];
-					Array.Copy(key, offset, identifier, 0, (int)idLen);
-					offset += (int)idLen;
-
-					var identifierStr = System.Text.Encoding.ASCII.GetString(identifier);
-					if (identifierStr != "DMSIG")
-						continue;
-
-					// Read scriptIndex (we don't need it for counting)
-					ReadCompactSizeFromBytes(key, ref offset);
-
-					// Read signerIndex
-					if (offset >= key.Length)
-						continue;
-					var signerIndex = key[offset];
-
-					uniqueSigners.Add(signerIndex);
-				}
-				catch
-				{
-					continue;
-				}
-			}
-
-			return uniqueSigners.Count >= _requiredSignatures;
+			return GetPSBTSignerIndices(psbt, inputIndex).Count >= _requiredSignatures;
 		}
 
 		/// <summary>
@@ -742,56 +770,19 @@ namespace NBitcoin
 
 		foreach (var kvp in inputPSBT.Unknown)
 		{
-			var key = kvp.Key;
-			if (key.Length < 2 || key[0] != 0xFC)
+			if (!TryParsePartialSignatureKey(kvp.Key, out var scriptIndex, out var signerIndex))
+				continue;
+			if (!TaprootSignature.TryParse(kvp.Value, out var signature))
 				continue;
 
-			try
+			partialSignatures.Add(new PartialSignature
 			{
-				int offset = 1;
-
-				// Read identifier length
-				var idLen = ReadCompactSizeFromBytes(key, ref offset);
-				if (offset + (int)idLen > key.Length)
-					continue;
-
-				// Read identifier
-				var identifier = new byte[idLen];
-				Array.Copy(key, offset, identifier, 0, (int)idLen);
-				offset += (int)idLen;
-
-				// Check if this is our identifier
-				var identifierStr = System.Text.Encoding.ASCII.GetString(identifier);
-				if (identifierStr != "DMSIG")
-					continue;
-
-				// Read subtype (scriptIndex)
-				var scriptIndex = (int)ReadCompactSizeFromBytes(key, ref offset);
-
-				// Read key data (signerIndex)
-				if (offset >= key.Length)
-					continue;
-				var signerIndex = key[offset];
-
-				// Parse signature from value
-				if (!TaprootSignature.TryParse(kvp.Value, out var signature))
-					continue;
-
-				// Reconstruct the PartialSignature
-				partialSignatures.Add(new PartialSignature
-				{
-					SignerIndex = signerIndex,
-					Signature = signature,
-					ScriptIndex = scriptIndex,
-					EstimatedVirtualSize = 0,
-					EstimatedVirtualSizeWithBuffer = 0
-				});
-			}
-			catch
-			{
-				// Skip malformed proprietary keys
-				continue;
-			}
+				SignerIndex = signerIndex,
+				Signature = signature,
+				ScriptIndex = scriptIndex,
+				EstimatedVirtualSize = 0,
+				EstimatedVirtualSizeWithBuffer = 0
+			});
 		}
 
 		// Add all partial signatures to the builder
@@ -802,6 +793,90 @@ namespace NBitcoin
 		// Finalize the transaction
 		return builder.FinalizeTransaction(inputIndex, useBufferedSize);
 	}
+
+		/// <summary>The owner's public key (the Taproot internal key, key-path spend).</summary>
+		public PubKey OwnerPubKey => _ownerPubKey;
+
+		/// <summary>The signers' public keys in script order (sorted). A signer's index is its position here.</summary>
+		public IReadOnlyList<PubKey> SignerPubKeys => _signerPubKeys.AsReadOnly();
+
+		/// <summary>The number of signatures (k) a script path needs.</summary>
+		public int RequiredSignatures => _requiredSignatures;
+
+		/// <summary>The indices (into <see cref="SignerPubKeys"/>) of the k signers of the script at <paramref name="scriptIndex"/>.</summary>
+		public IReadOnlyList<int> GetScriptSignerIndices(int scriptIndex)
+		{
+			if (scriptIndex < 0 || scriptIndex >= _scripts.Count)
+				throw new ArgumentOutOfRangeException(nameof(scriptIndex));
+			return Array.AsReadOnly(_scriptToSignerIndices[_scripts[scriptIndex].LeafHash.ToString()]);
+		}
+
+		/// <summary>
+		/// The indices (into <see cref="SignerPubKeys"/>) of the signers that already signed the input,
+		/// read from the "DMSIG" proprietary fields written by <see cref="SignPSBT"/>.
+		/// </summary>
+		public IReadOnlyList<int> GetPSBTSignerIndices(PSBT psbt, int inputIndex = 0)
+		{
+			var signers = new SortedSet<int>();
+			foreach (var kvp in psbt.Inputs[inputIndex].Unknown)
+			{
+				if (TryParsePartialSignatureKey(kvp.Key, out _, out var signerIndex))
+					signers.Add(signerIndex);
+			}
+			return signers.ToList();
+		}
+
+		/// <summary>
+		/// Removes from the input the partial signatures of the scripts that can no longer be completed:
+		/// the scripts that do not contain every signer who already signed. Every signer signs all the
+		/// scripts he participates in, so without this the PSBT keeps signatures that will never be used.
+		/// Returns the number of signatures removed.
+		/// </summary>
+		public int PrunePSBT(PSBT psbt, int inputIndex = 0)
+		{
+			var inputPSBT = psbt.Inputs[inputIndex];
+			var signers = GetPSBTSignerIndices(psbt, inputIndex);
+			var toRemove = new List<byte[]>();
+			foreach (var kvp in inputPSBT.Unknown)
+			{
+				if (!TryParsePartialSignatureKey(kvp.Key, out var scriptIndex, out _))
+					continue;
+				if (scriptIndex < 0 || scriptIndex >= _scripts.Count)
+					continue;
+				var scriptSigners = _scriptToSignerIndices[_scripts[scriptIndex].LeafHash.ToString()];
+				if (!signers.All(s => scriptSigners.Contains(s)))
+					toRemove.Add(kvp.Key);
+			}
+			foreach (var key in toRemove)
+				inputPSBT.Unknown.Remove(key);
+			return toRemove.Count;
+		}
+
+		// Parses a "DMSIG" proprietary key: 0xFC <compact_size:id_len> "DMSIG" <compact_size:scriptIndex> <compact_size:signerIndex>
+		private static bool TryParsePartialSignatureKey(byte[] key, out int scriptIndex, out int signerIndex)
+		{
+			scriptIndex = -1;
+			signerIndex = -1;
+			if (key == null || key.Length < 2 || key[0] != 0xFC)
+				return false;
+			try
+			{
+				int offset = 1;
+				var idLen = ReadCompactSizeFromBytes(key, ref offset);
+				if (idLen != 5 || offset + 5 > key.Length)
+					return false;
+				if (System.Text.Encoding.ASCII.GetString(key, offset, 5) != "DMSIG")
+					return false;
+				offset += 5;
+				scriptIndex = (int)ReadCompactSizeFromBytes(key, ref offset);
+				signerIndex = (int)ReadCompactSizeFromBytes(key, ref offset);
+				return offset == key.Length;
+			}
+			catch
+			{
+				return false;
+			}
+		}
 
 		/// <summary>
 		/// Gets the size in bytes of a varint encoding for the given length.
