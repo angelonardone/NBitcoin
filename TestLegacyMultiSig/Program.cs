@@ -12,6 +12,10 @@ using DistricutedCryptographyLib;
 // GeneXus will use it. Proves: build address -> fund -> each member signs their own PSBT
 // copy -> combine -> finalize -> broadcast -> confirm, on a real regtest node.
 
+// Legacy multisig payments with pre-signed fee levels through GroupProcessor: see LegacyLevelsSpike.cs.
+if (args.Length > 0 && args[0].StartsWith("legacy-levels"))
+	return LegacyLevelsSpike.Run(args);
+
 // Offline checks of the Delegated multisig with pre-signed fee levels: see DelegatedSpike.cs.
 if (args.Length > 0 && args[0].StartsWith("delegated"))
 	return DelegatedSpike.Run(args);

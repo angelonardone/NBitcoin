@@ -76,6 +76,39 @@ namespace DistricutedCryptographyLib
 			return LegacyMultiSig.Finalize(psbtBase64, networkType);
 		}
 
+		// Payments with pre-signed fee levels (2026-10-15), the same contract as DelegatedProcessor.
+		// Build the unsigned bundle: one PSBT for the calculated fee and one per percentage above it
+		// (percentages = "10,30,100": multiples of 10 up to 100, at most 3).
+		// utxosJson: [{TxId, Vout, AmountBtc, Sequence, IsChange, Address}] (coins of several addresses allowed).
+		public string BuildLegacySpend(string utxosJson, string sendTo, string amountBtc, string changeAddr,
+			string feeBtc, string percentages, bool sendAll, string networkType)
+		{
+			return LegacyMultiSig.BuildSpend(_group, utxosJson, sendTo, amountBtc, changeAddr, feeBtc, percentages, sendAll, networkType);
+		}
+
+		// Sign the bundle with one member's chain-level extended private keys (receiving and change).
+		// finalPercent < 0: sign every level; finalPercent >= 0 (last signer): sign only that level and finalize it.
+		public string SignLegacySpend(string bundleJson, string receivingExtPrivKey, string changeExtPrivKey,
+			int finalPercent, string networkType)
+		{
+			return LegacyMultiSig.SignSpend(_group, bundleJson, receivingExtPrivKey, changeExtPrivKey, finalPercent, networkType);
+		}
+
+		// Finalize one level of a bundle that already has the required signatures.
+		public string FinalizeLegacySpend(string bundleJson, int percent, string networkType)
+		{
+			return LegacyMultiSig.FinalizeSpend(_group, bundleJson, percent, networkType);
+		}
+
+		// What the bundle really pays (destination, amount, change, fee of each level), who signed and
+		// whether the next signature is the last one. The two extended public keys (optional) say whether
+		// that member already signed.
+		public string DescribeLegacySpend(string bundleJson, string myReceivingExtPubKey, string myChangeExtPubKey,
+			string networkType)
+		{
+			return LegacyMultiSig.DescribeSpend(_group, bundleJson, myReceivingExtPubKey, myChangeExtPubKey, networkType);
+		}
+
 		private static GroupSDT Clone(GroupSDT source)
 		{
 			if (source == null)
