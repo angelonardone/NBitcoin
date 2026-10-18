@@ -757,38 +757,17 @@ static class DelegatedSpike
 	}
 
 	// Legacy: 1-of-n, n-of-n, and the address does not depend on the order of the members (BIP67).
+	// The payments of 1-of-2 ... 16-of-16 groups are checked by LegacyLevelsSpike (pre-signed fee levels, also on a
+	// node); here only the address rules (2026-10-17: the old single-PSBT API was removed from the library).
 	static void LegacyThresholds()
 	{
-		Console.WriteLine("\n== J) Legacy 1-of-n, n-of-n, key order ==");
-		var sendTo = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Net).ToString();
+		Console.WriteLine(Environment.NewLine + "== J) Legacy key order and size limit ==");
 		foreach (var (k, n) in new[] { (1, 3), (3, 3), (2, 3), (16, 16) })
 		{
-			var (gp, signers) = MakeLegacyGroup(k, n);
+			var (gp, _) = MakeLegacyGroup(k, n);
 			var address = S(J(gp.CreateLegacyAddress(0, false, "regtest")), "address");
 			var (gp2, _) = MakeLegacyGroup(k, n, reverseContacts: true);
 			Check($"Legacy {k}-of-{n}: the order of the members does not change the address", address == S(J(gp2.CreateLegacyAddress(0, false, "regtest")), "address"), address);
-
-			var txid = new uint256(Hashes.SHA256(Encoding.UTF8.GetBytes($"legacy{k}{n}"))).ToString();
-			var utxos = JsonSerializer.Serialize(new[] { new { TxId = txid, Vout = 0, AmountBtc = "1.0" } });
-			var change = S(J(gp.CreateLegacyAddress(0, true, "regtest")), "address");
-			var psbt = S(J(gp.BuildLegacyPsbt(utxos, sendTo, "0.4", change, "0.0001", false, 0, false, "regtest")), "psbt");
-			JsonElement final = default;
-			for (int i = 0; i < k; i++)
-			{
-				// any k of the signers: start from the last one so the owner is not always included
-				var signer = signers[n - 1 - i];
-				psbt = S(J(gp.SignLegacyPsbt(psbt, 0, signer.Account.Derive(0).ToString(Net), "regtest")), "psbt");
-				final = J(gp.FinalizeLegacyPsbt(psbt, "regtest"));
-				if (i < k - 1 && Ok(final)) { Check($"Legacy {k}-of-{n}: not final with {i + 1} signature(s)", false); break; }
-			}
-			var valid = false;
-			if (Ok(final))
-			{
-				var tx = Transaction.Parse(S(final, "txHex"), Net);
-				var spent = new TxOut(Money.Coins(1.0m), BitcoinAddress.Create(address, Net));
-				valid = tx.CreateValidator(new[] { spent }).ValidateInput(0).Error == null;
-			}
-			Check($"Legacy {k}-of-{n}: {k} signature(s) give a valid transaction", valid, Ok(final) ? "" : ErrOf(final));
 		}
 		var (tooBig, _) = MakeLegacyGroup(2, 17);
 		ExpectError("Legacy with 17 signers refused", tooBig.CreateLegacyAddress(0, false, "regtest"), "at most 16");

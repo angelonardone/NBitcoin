@@ -50,32 +50,6 @@ namespace DistricutedCryptographyLib
 			return LegacyMultiSig.GetDescriptor(_group, isChange, networkType);
 		}
 
-		// Build the unsigned spending PSBT (base64) for the loaded group. isChange selects the chain
-		// the spent (input) multisig addresses were derived on.
-		public string BuildLegacyPsbt(string utxosJson, string sendTo, string amountBtc,
-			string changeAddr, string feeBtc, bool sendAll, int sequence, bool isChange, string networkType)
-		{
-			return LegacyMultiSig.BuildPsbt(_group, utxosJson, sendTo, amountBtc, changeAddr, feeBtc, sendAll, sequence, isChange, networkType);
-		}
-
-		// Sign a PSBT with one member's chain-level extended private key (derived at the given sequence).
-		public string SignLegacyPsbt(string psbtBase64, int sequence, string signerExtPrivKey, string networkType)
-		{
-			return LegacyMultiSig.SignPsbt(psbtBase64, sequence, signerExtPrivKey, networkType);
-		}
-
-		// Combine several partially-signed PSBTs (JSON array of base64) into one.
-		public string CombineLegacyPsbts(string psbtsJson, string networkType)
-		{
-			return LegacyMultiSig.CombinePsbts(psbtsJson, networkType);
-		}
-
-		// Finalize a (combined) PSBT and extract the broadcastable raw transaction.
-		public string FinalizeLegacyPsbt(string psbtBase64, string networkType)
-		{
-			return LegacyMultiSig.Finalize(psbtBase64, networkType);
-		}
-
 		// Payments with pre-signed fee levels (2026-10-15), the same contract as DelegatedProcessor.
 		// Build the unsigned bundle: one PSBT for the calculated fee and one per percentage above it
 		// (percentages = "10,30,100": multiples of 10 up to 100, at most 3).
