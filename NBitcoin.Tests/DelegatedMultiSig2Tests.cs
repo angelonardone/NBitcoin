@@ -1635,7 +1635,8 @@ namespace NBitcoin.Tests
 		[Trait("Category", "RPCClient")]
 		public void StressTest_RandomKofN_MuSig2_WithNodeValidation()
 		{
-			using (var nodeBuilder = NodeBuilderEx.Create())
+			// Bitcoin Core 25, like the other tests: GetLatest() (32.0 since the merge of 2026-10-21) does not start on Windows Server 2019
+			using (var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Network.RegTest))
 			{
 				var node = nodeBuilder.CreateNode();
 				var rpc = node.CreateRPCClient();
