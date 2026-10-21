@@ -40,6 +40,32 @@ namespace NBitcoin.Tests
 
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
+		public static void RejectsOversizedTaprootOutputLeafHashVector()
+		{
+			AssertMalformedTaprootOutput([0xfe, 0x00, 0x00, 0x40, 0x00]);
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public static void RejectsTruncatedTaprootOutputLeafHashVector()
+		{
+			AssertMalformedTaprootOutput([0x02, .. new byte[36]]);
+		}
+
+		private static void AssertMalformedTaprootOutput(byte[] value)
+		{
+			var transaction = Network.Main.CreateTransaction();
+			transaction.Inputs.Add(OutPoint.Zero);
+			transaction.Outputs.Add(Money.Zero, Script.Empty);
+			var psbt = PSBT.FromTransaction(transaction, Network.Main);
+			var pubkey = Encoders.Hex.DecodeData("6bf657f19f5917eb6197ae123caf435611a1d35ba23a2d3394e579208d0f18d4");
+			psbt.Outputs[0].Unknown.Add([PSBTConstants.PSBT_OUT_TAP_BIP32_DERIVATION, .. pubkey], value);
+
+			Assert.Throws<FormatException>(() => PSBT.Load(psbt.ToBytes(), Network.Main));
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
 		public static void CanDeriveHDKey()
 		{
 			var k = new ExtKey();
@@ -175,6 +201,52 @@ namespace NBitcoin.Tests
 
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
+		public void PSBTInputRejectsConflictingWitnessUtxo()
+		{
+			var funding = Network.Main.CreateTransaction();
+			funding.Inputs.Add(OutPoint.Zero);
+			funding.Outputs.Add(Money.Coins(1), new Key().PubKey.WitHash.ScriptPubKey);
+			var spending = Network.Main.CreateTransaction();
+			spending.Inputs.Add(funding, 0);
+			spending.Outputs.Add(Money.Coins(0.5m), new Key());
+			var input = PSBT.FromTransaction(spending, Network.Main).Inputs[0];
+			input.NonWitnessUtxo = funding;
+
+			foreach (var conflicting in new[]
+			{
+				new TxOut(Money.Coins(2), funding.Outputs[0].ScriptPubKey),
+				new TxOut(funding.Outputs[0].Value, new Key())
+			})
+			{
+				input.WitnessUtxo = conflicting;
+				Assert.Contains(input.CheckSanity(), e => e.Message.Contains("witness_utxo does not match"));
+			}
+
+			input.WitnessUtxo = funding.Outputs[0].Clone();
+			Assert.Empty(input.CheckSanity());
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void TrySlimUtxoUsesNonWitnessUtxoOutput()
+		{
+			var funding = Network.Main.CreateTransaction();
+			funding.Inputs.Add(OutPoint.Zero);
+			funding.Outputs.Add(Money.Coins(1), new Key().PubKey.WitHash.ScriptPubKey);
+			var spending = Network.Main.CreateTransaction();
+			spending.Inputs.Add(funding, 0);
+			spending.Outputs.Add(Money.Coins(0.5m), new Key());
+			var input = PSBT.FromTransaction(spending, Network.Main).Inputs[0];
+			input.NonWitnessUtxo = funding;
+			input.WitnessUtxo = new TxOut(Money.Coins(2), new Key());
+
+			Assert.True(input.TrySlimUTXO());
+			Assert.Null(input.NonWitnessUtxo);
+			Assert.Equal(funding.Outputs[0].ToBytes(), input.WitnessUtxo.ToBytes());
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
 		public void TransactionBuilderRejectsConflictingCoinsFromPSBT()
 		{
 			var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
@@ -239,6 +311,29 @@ namespace NBitcoin.Tests
 
 			Assert.Same(identicalCoin, builder.FindCoin(coin.Outpoint));
 			Assert.Equal(updatedSequence, transaction.Inputs.Single().Sequence);
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void TransactionBuilderValidatesDuplicateCoinsAcrossGroups()
+		{
+			var outpoint = new OutPoint(RandomUtils.GetUInt256(), 0);
+			var txOut = new TxOut(Money.Coins(1.0m), new Key());
+			var builder = Network.Main.CreateTransactionBuilder();
+			builder.CoinFinder = _ => throw new InvalidOperationException("CoinFinder should not be called");
+			builder.AddCoin(new Coin(outpoint, txOut));
+			builder.Then().AddCoin(new Coin(outpoint, txOut.Clone()));
+
+			foreach (var conflictingTxOut in new[]
+			{
+				new TxOut(Money.Coins(2.0m), txOut.ScriptPubKey),
+				new TxOut(txOut.Value, new Key())
+			})
+			{
+				builder.Then();
+				var exception = Assert.Throws<InvalidOperationException>(() => builder.AddCoin(new Coin(outpoint, conflictingTxOut)));
+				Assert.Contains("different amount or scriptPubKey", exception.Message);
+			}
 		}
 
 		[Fact]

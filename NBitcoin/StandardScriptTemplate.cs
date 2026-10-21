@@ -159,7 +159,7 @@ namespace NBitcoin
 		protected override bool FastCheckScriptSig(Script scriptSig, Script? scriptPubKey, out bool needMoreCheck)
 		{
 			needMoreCheck = false;
-			return true;
+			return scriptSig.Length == 0;
 		}
 		protected override bool CheckScriptSigCore(Script scriptSig, Op[] scriptSigOps, Script? scriptPubKey, Op[]? scriptPubKeyOps)
 		{
@@ -356,7 +356,7 @@ namespace NBitcoin
 				var sigCountExpected = scriptPubKeyOps[0].GetInt();
 				if (sigCountExpected == null)
 					return false;
-				return sigCountExpected == scriptSigOps.Length + 1;
+				return sigCountExpected == scriptSigOps.Length - 1;
 			}
 			return true;
 

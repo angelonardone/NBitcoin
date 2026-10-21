@@ -228,6 +228,8 @@ namespace NBitcoin.Tests
 			Assert.Equal(scriptPubKey, PayToTaprootTemplate.Instance.GenerateScriptPubKey(pubkey));
 #pragma warning restore CS0618 // Type or member is obsolete
 			Assert.Equal(pubkey, PayToTaprootTemplate.Instance.ExtractScriptPubKeyParameters(scriptPubKey));
+			Assert.True(PayToTaprootTemplate.Instance.CheckScriptSig(Script.Empty, scriptPubKey));
+			Assert.False(PayToTaprootTemplate.Instance.CheckScriptSig(new Script("0"), scriptPubKey));
 
 			// signature has wrong length
 			scriptPubKey = new Script("1 53a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda34300");
@@ -840,6 +842,35 @@ namespace NBitcoin.Tests
 			Assert.True(combined == partial3c);
 		}
 
+		[Theory]
+		[InlineData(3, true)]
+		[InlineData(417, false)]
+		[Trait("Core", "Core")]
+		public void script_combineSigs_handles_nested_redeem_scripts(int nestingDepth, bool includeP2Wsh)
+		{
+			var nestedScript = new Script().Hash.ScriptPubKey;
+			var nestedWitnessScript = new Script().WitHash.ScriptPubKey;
+			var terminalScript = new Script(OpcodeType.OP_RETURN);
+
+			Script CreateScriptSig(byte value)
+			{
+				var scriptSig = new Script(Op.GetPushOp(new[] { value }), Op.GetPushOp(terminalScript.ToBytes()));
+				for (var i = 1; i < nestingDepth; i++)
+					scriptSig += Op.GetPushOp((includeP2Wsh && i % 2 != 0 ? nestedWitnessScript : nestedScript).ToBytes());
+				return scriptSig;
+			}
+
+			var transaction = Network.Main.CreateTransaction();
+			transaction.Inputs.Add(new TxIn());
+			var scriptSig1 = CreateScriptSig(1);
+			var scriptSig2 = CreateScriptSig(2);
+
+			// 417 is the deepest chain of 23-byte P2SH programs that fits in EvalScript's
+			// 10,000-byte script limit. Combining it must not consume call-stack depth.
+			Assert.True(scriptSig1.Length <= 10_000);
+			Assert.Equal(scriptSig1, Script.CombineSignatures(nestedScript, transaction, 0, scriptSig1, scriptSig2));
+		}
+
 		private void SignSignature(Key[] keys, Transaction txFrom, Transaction txTo, int n, params Script[] knownRedeems)
 		{
 			Network.Main.CreateTransactionBuilder()
@@ -879,6 +910,22 @@ namespace NBitcoin.Tests
 			var pushdata4Stack = context.Clone();
 			Assert.True(pushdata4Stack.EvalScript(pushdata4, new TransactionChecker(Network.CreateTransaction(), 0), HashVersion.Original));
 			AssertEx.StackEquals(pushdata4Stack.Stack, directStack.Stack);
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void VerifyScriptClearsStackButEvalScriptDoesNot()
+		{
+			var context = new ScriptEvaluationContext();
+			var checker = new TransactionChecker(Network.CreateTransaction(), 0);
+
+			Assert.True(context.EvalScript(new Script("1"), checker, HashVersion.Original));
+			Assert.Single(context.Stack);
+			Assert.True(context.VerifyScript(Script.Empty, WitScript.Empty, new Script("OP_DEPTH 0 OP_EQUAL"), checker));
+			Assert.Single(context.Stack);
+
+			Assert.True(context.EvalScript(new Script("1"), checker, HashVersion.Original));
+			Assert.Equal(2, context.Stack.Count);
 		}
 
 		[Theory]
@@ -1103,6 +1150,20 @@ namespace NBitcoin.Tests
 			var actual = PayToScriptHashTemplate.Instance.GenerateScriptSig(new[] { sig, sig }, new Script(scriptPubKey));
 			var expected = new Script("0 3044022064f45a382a15d3eb5e7fe72076eec4ef0f56fde1adfd710866e729b9e5f3383d02202720a895914c69ab49359087364f06d337a2138305fbc19e20d18da78415ea9301 3044022064f45a382a15d3eb5e7fe72076eec4ef0f56fde1adfd710866e729b9e5f3383d02202720a895914c69ab49359087364f06d337a2138305fbc19e20d18da78415ea9301 " + new Script(scriptPubKey).ToHex());
 			Assert.Equal(expected, actual);
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
+		public void PayToMultiSigTemplateChecksSignatureCount()
+		{
+			var scriptPubKey = PayToMultiSigTemplate.Instance.GenerateScriptPubKey(3, Enumerable.Range(0, 5).Select(_ => new Key().PubKey).ToArray());
+			var signature = new TransactionSignature(Encoders.Hex.DecodeData("3044022064f45a382a15d3eb5e7fe72076eec4ef0f56fde1adfd710866e729b9e5f3383d02202720a895914c69ab49359087364f06d337a2138305fbc19e20d18da78415ea9301"));
+
+			var validShape = PayToMultiSigTemplate.Instance.GenerateScriptSig(Enumerable.Repeat(signature, 3));
+			var undersignedShape = PayToMultiSigTemplate.Instance.GenerateScriptSig(new[] { signature });
+
+			Assert.True(PayToMultiSigTemplate.Instance.CheckScriptSig(validShape, scriptPubKey));
+			Assert.False(PayToMultiSigTemplate.Instance.CheckScriptSig(undersignedShape, scriptPubKey));
 		}
 
 		[Fact]

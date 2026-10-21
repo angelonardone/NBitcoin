@@ -71,7 +71,7 @@ public class PSBT2 : PSBT
 
 		for (; mapIndex <= (outputCount.ToLong() + inputCount.ToLong()); mapIndex++)
 		{
-			var outputIndex = mapIndex - inputCount.ToLong();
+			var outputIndex = mapIndex - inputCount.ToLong() - 1;
 			var map = maps[(int)mapIndex];
 			Outputs.Add(new PSBT2Output(map, this, (uint)outputIndex));
 		}
@@ -122,11 +122,15 @@ public class PSBT2 : PSBT
 		var result = this.Clone();
 		for (int i = 0; i < other.Inputs.Count; i++)
 		{
-			result.Inputs.Add(other.Inputs[i]);
+			var map = new NBitcoin.Map();
+			other.Inputs[i].FillMap(map);
+			result.Inputs.Add(new PSBT2Input(map, result, (uint)result.Inputs.Count));
 		}
 		for (int i = 0; i < other.Outputs.Count; i++)
 		{
-			result.Outputs.Add(other.Outputs[i]);
+			var map = new NBitcoin.Map();
+			other.Outputs[i].FillMap(map);
+			result.Outputs.Add(new PSBT2Output(map, result, (uint)result.Outputs.Count));
 		}
 		return result;
 	}
@@ -214,7 +218,7 @@ public class PSBT2 : PSBT
 		var txOut = this.Network.Consensus.ConsensusFactory.CreateTxOut();
 		txOut.Value = value;
 		txOut.ScriptPubKey = scriptPubKey;
-		return new PSBT2Output(value, scriptPubKey, this, (uint)Inputs.Count);
+		return new PSBT2Output(value, scriptPubKey, this, (uint)Outputs.Count);
 	}
 	public override PSBT UpdateFrom(PSBT other)
 	{

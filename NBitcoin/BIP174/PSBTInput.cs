@@ -96,10 +96,7 @@ namespace NBitcoin
 				if (hd_taprootkeypaths.ContainsKey(pubkey3))
 					throw new FormatException(
 						"Invalid PSBTOutput, duplicate key for PSBT_IN_TAP_BIP32_DERIVATION");
-				var bs = new BitcoinStream(kv.Value);
-				List<uint256> hashes = null!;
-				bs.ReadWrite(ref hashes);
-				var pos = (int)bs.Inner.Position;
+				var hashes = ReadTaprootKeyPathHashes(kv.Value, out var pos);
 				KeyPath path2 = KeyPath.FromBytes(kv.Value.Skip(pos + 4).ToArray());
 				hd_taprootkeypaths.Add(pubkey3,
 					new TaprootKeyPath(
@@ -462,6 +459,12 @@ namespace NBitcoin
 				{
 					errors.Add(new PSBTError(Index, "Global transaction referencing an out of bound output in non_witness_utxo"));
 					validOutpoint = false;
+				}
+				if (witness_utxo != null && validOutpoint)
+				{
+					var expected = NonWitnessUtxo.Outputs[PrevOut.N];
+					if (witness_utxo.Value != expected.Value || witness_utxo.ScriptPubKey != expected.ScriptPubKey)
+						errors.Add(new PSBTError(Index, "witness_utxo does not match the referenced output in non_witness_utxo"));
 				}
 				if (redeem_script != null && validOutpoint)
 				{
@@ -972,11 +975,7 @@ namespace NBitcoin
 			if (Parent.Network.Consensus.NeverNeedPreviousTxForSigning ||
 				!coin.IsMalleable)
 			{
-				if (WitnessUtxo == null)
-				{
-					if (PrevOut.N < NonWitnessUtxo.Outputs.Count)
-						WitnessUtxo = NonWitnessUtxo.Outputs[PrevOut.N];
-				}
+				WitnessUtxo = NonWitnessUtxo.Outputs[PrevOut.N];
 				NonWitnessUtxo = null;
 				return true;
 			}
