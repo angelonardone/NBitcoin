@@ -14,6 +14,10 @@ using DistricutedCryptographyLib;
 if (args.Length > 0 && args[0].StartsWith("legacy-levels"))
 	return LegacyLevelsSpike.Run(args);
 
+// The "Multi Signature" groups (TaprootMultiSig, no owner): see MultiSigSpike.cs.
+if (args.Length > 0 && args[0].StartsWith("multisig"))
+	return MultiSigSpike.Run(args);
+
 // Offline checks of the Delegated multisig with pre-signed fee levels: see DelegatedSpike.cs.
 if (args.Length > 0 && args[0].StartsWith("delegated"))
 	return DelegatedSpike.Run(args);
@@ -82,5 +86,5 @@ if (args.Length > 0 && args[0] == "checks")
 	return 0;
 }
 
-Console.WriteLine("usage: TestLegacyMultiSig legacy-levels | legacy-levels-node | delegated... | vector | checks");
+Console.WriteLine("usage: TestLegacyMultiSig legacy-levels | legacy-levels-node | delegated... | multisig | multisig-node | vector | checks");
 return 1;

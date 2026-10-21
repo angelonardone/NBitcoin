@@ -88,7 +88,10 @@ namespace NBitcoin
 	/// </summary>
 	public class DelegatedMultiSig
 	{
+		// null in a multisig without owner (TaprootMultiSig): then nobody spends alone by the key path
 		private readonly PubKey _ownerPubKey;
+		// the Taproot internal key: the owner's key, or the BIP327 aggregate of every signer (TaprootMultiSig)
+		private readonly TaprootInternalPubKey _internalKey;
 		private readonly List<PubKey> _signerPubKeys;
 		private readonly int _requiredSignatures;
 		private readonly Network _network;
@@ -106,9 +109,21 @@ namespace NBitcoin
 		}
 
 		private DelegatedMultiSig(PubKey ownerPubKey, List<PubKey> signerPubKeys, int requiredSignatures, Network network, bool sortSigners)
+			: this(ownerPubKey ?? throw new ArgumentNullException(nameof(ownerPubKey)), ownerPubKey.TaprootInternalKey, signerPubKeys, requiredSignatures, network, sortSigners)
 		{
-			if (ownerPubKey == null)
-				throw new ArgumentNullException(nameof(ownerPubKey));
+		}
+
+		/// <summary>
+		/// For a multisig WITHOUT owner (see <see cref="TaprootMultiSig"/>): the key path is <paramref name="internalKey"/>,
+		/// which no single participant can sign for; every spend goes through a k-of-n script.
+		/// </summary>
+		protected DelegatedMultiSig(TaprootInternalPubKey internalKey, List<PubKey> signerPubKeys, int requiredSignatures, Network network, bool sortSigners)
+			: this(null, internalKey ?? throw new ArgumentNullException(nameof(internalKey)), signerPubKeys, requiredSignatures, network, sortSigners)
+		{
+		}
+
+		private DelegatedMultiSig(PubKey ownerPubKey, TaprootInternalPubKey internalKey, List<PubKey> signerPubKeys, int requiredSignatures, Network network, bool sortSigners)
+		{
 			if (signerPubKeys == null || signerPubKeys.Count == 0)
 				throw new ArgumentException("At least one signer public key is required", nameof(signerPubKeys));
 			if (requiredSignatures < 1 || requiredSignatures > signerPubKeys.Count)
@@ -120,6 +135,7 @@ namespace NBitcoin
 				throw new ArgumentException("The signer public keys must be different", nameof(signerPubKeys));
 
 			_ownerPubKey = ownerPubKey;
+			_internalKey = internalKey;
 			_signerPubKeys = sortSigners
 				? signerPubKeys.OrderBy(XOnlyHex, StringComparer.Ordinal).ToList()
 				: signerPubKeys.ToList();
@@ -232,7 +248,7 @@ namespace NBitcoin
 		{
 			var builder = new TaprootBuilder();
 			AddSubTree(builder, 0, _scripts.Count, 0);
-			_taprootSpendInfo = builder.Finalize(_ownerPubKey.TaprootInternalKey);
+			_taprootSpendInfo = builder.Finalize(_internalKey);
 		}
 
 		private void AddSubTree(TaprootBuilder builder, int start, int count, uint depth)
@@ -268,8 +284,26 @@ namespace NBitcoin
 				var keys = _scriptToSignerIndices[script.LeafHash.ToString()].Select(index => XOnlyHex(_signerPubKeys[index]));
 				leaves.Add($"multi_a({_requiredSignatures},{string.Join(",", keys)})");
 			}
-			return NBitcoin.WalletPolicies.Miniscript.AddChecksum($"tr({XOnlyHex(_ownerPubKey)},{TreeExpression(leaves, 0, leaves.Count)})");
+			return NBitcoin.WalletPolicies.Miniscript.AddChecksum($"tr({Encoders.Hex.EncodeData(_internalKey.ToBytes())},{TreeExpression(leaves, 0, leaves.Count)})");
 		}
+
+		// The leaves of the tree written as BIP387 multi_a(k, keys in script order), for descriptors.
+		protected List<string> DescriptorLeaves(Func<PubKey, string> keyText)
+		{
+			var leaves = new List<string>(_scripts.Count);
+			foreach (var script in _scripts)
+			{
+				var keys = _scriptToSignerIndices[script.LeafHash.ToString()].Select(index => keyText(_signerPubKeys[index]));
+				leaves.Add($"multi_a({_requiredSignatures},{string.Join(",", keys)})");
+			}
+			return leaves;
+		}
+
+		// The tree of descriptor leaves, in the order of the address (see CreateTaprootSpendInfo).
+		protected static string DescriptorTree(IReadOnlyList<string> leaves) => TreeExpression(leaves, 0, leaves.Count);
+
+		// The k-combinations used by the ranged descriptors (the order of the leaves of every address).
+		protected static List<int[]> Combinations(int n, int k) => GetCombinations(n, k);
 
 		/// <summary>
 		/// The ranged output descriptor of a whole HD wallet built with <see cref="FromExtPubKeys"/>: its address
@@ -586,7 +620,7 @@ namespace NBitcoin
 				var input = psbt.Inputs[i];
 				input.WitnessUtxo = spentCoins[i].TxOut;
 
-				input.TaprootInternalKey = _ownerPubKey.TaprootInternalKey;
+				input.TaprootInternalKey = _internalKey;
 				input.TaprootMerkleRoot = _taprootSpendInfo.MerkleRoot;
 			}
 
@@ -794,8 +828,14 @@ namespace NBitcoin
 		return builder.FinalizeTransaction(inputIndex, useBufferedSize);
 	}
 
-		/// <summary>The owner's public key (the Taproot internal key, key-path spend).</summary>
+		/// <summary>The owner's public key (the Taproot internal key, key-path spend); null when there is no owner.</summary>
 		public PubKey OwnerPubKey => _ownerPubKey;
+
+		/// <summary>True when an owner spends alone by the key path (DelegatedMultiSig); false in a TaprootMultiSig.</summary>
+		public bool HasOwner => _ownerPubKey != null;
+
+		/// <summary>The Taproot internal key of the address (the owner's key, or the aggregate of the signers).</summary>
+		public TaprootInternalPubKey InternalKey => _internalKey;
 
 		/// <summary>The signers' public keys in script order (sorted). A signer's index is its position here.</summary>
 		public IReadOnlyList<PubKey> SignerPubKeys => _signerPubKeys.AsReadOnly();
@@ -1136,6 +1176,9 @@ namespace NBitcoin
 			{
 				if (ownerPrivateKey == null)
 					throw new ArgumentNullException(nameof(ownerPrivateKey));
+
+				if (_multiSig._ownerPubKey == null)
+					throw new InvalidOperationException("This multisig has no owner: every spend needs k signatures of the script path");
 
 				if (ownerPrivateKey.PubKey != _multiSig._ownerPubKey)
 					throw new ArgumentException("Provided private key does not match the owner's public key");

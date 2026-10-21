@@ -29,9 +29,19 @@ namespace DistricutedCryptographyLib
 	///
 	/// Every method returns a JSON string and never throws toward GeneXus:
 	/// <c>{ "success": true, "error": "", ... }</c> or <c>{ "success": false, "error": "..." }</c>.
+	///
+	/// "Multi Signature" groups (GroupSDT.GroupType = <see cref="MultiSignatureGroupType"/>, 2026-10-21) use the same
+	/// code with NBitcoin.TaprootMultiSig: there is NO owner. The owner of the group is one more signer (his
+	/// ExtPubKeyMultiSigReceiving / ExtPubKeyMultiSigChange join the members' keys), the k-of-n counts him, and the
+	/// Taproot internal key is the BIP327 aggregate of all the signers, so nobody spends alone: OwnerSpend is refused.
 	/// </summary>
 	public static class DelegatedMultiSigSpend
 	{
+		/// <summary>GroupType of the "Multi Signature" groups (Wallet.GroupType.MultiSignature).</summary>
+		public const short MultiSignatureGroupType = 60;
+
+		private static bool IsOwnerless(GroupSDT group) => group != null && group.GroupType == MultiSignatureGroupType;
+
 		/// <summary>How many fee levels the first signer may add to the calculated fee.</summary>
 		public const int MaxExtraFeeLevels = 3;
 
@@ -145,7 +155,10 @@ namespace DistricutedCryptographyLib
 				{
 					success = true,
 					error = "",
-					descriptor = DelegatedMultiSig.GetRangedDescriptor(owner, members, k, net),
+					// Multi Signature: BIP390 musig() of the signers inside tr() (descriptor wallets that know musig())
+					descriptor = owner == null
+						? TaprootMultiSig.GetRangedDescriptor(members, k, net)
+						: DelegatedMultiSig.GetRangedDescriptor(owner, members, k, net),
 					k,
 					n = members.Count,
 					isChange
@@ -175,7 +188,7 @@ namespace DistricutedCryptographyLib
 					var ms = GetMultiSig(cache, group, u.Sequence, u.IsChange, net);
 					firstScript ??= ms.Address.ScriptPubKey;
 					var txin = new TxIn(new OutPoint(uint256.Parse(u.TxId), (uint)u.Vout)) { Sequence = InputSequence };
-					txin.WitScript = asOwner ? new WitScript(new[] { new byte[64] }) : WorstCaseWitness(ms);
+					txin.WitScript = asOwner && ms.HasOwner ? new WitScript(new[] { new byte[64] }) : WorstCaseWitness(ms);
 					tx.Inputs.Add(txin);
 				}
 				tx.Outputs.Add(Money.Zero, BitcoinAddress.Create(sendTo.Trim(), net));
@@ -264,7 +277,7 @@ namespace DistricutedCryptographyLib
 						return Err($"The {(input.IsChange ? "change" : "receiving")} signing key is missing");
 					var key = ExtKey.Parse(xprv.Trim(), net).Derive((uint)input.Sequence).PrivateKey;
 					var ms = spend.MultiSigs[i];
-					if (key.PubKey == ms.OwnerPubKey)
+					if (ms.HasOwner && key.PubKey == ms.OwnerPubKey)
 						return Err("The owner of the group does not sign with the members: he spends alone");
 					if (!ms.SignerPubKeys.Contains(key.PubKey))
 						return Err("The signing key does not belong to a member of this group");
@@ -428,6 +441,8 @@ namespace DistricutedCryptographyLib
 		{
 			try
 			{
+				if (IsOwnerless(group))
+					return Err($"A Multi Signature group has no owner: every payment needs {group.MinimumShares} signatures");
 				var net = GetNetwork(networkType);
 				var utxos = ParseUtxos(utxosJson);
 				var cache = new Dictionary<string, DelegatedMultiSig>();
@@ -567,7 +582,7 @@ namespace DistricutedCryptographyLib
 			{
 				var input = psbt.Inputs[i];
 				input.WitnessUtxo = new TxOut(Money.Coins(ParseDec(utxos[i].AmountBtc)), multiSigs[i].Address.ScriptPubKey);
-				input.TaprootInternalKey = multiSigs[i].OwnerPubKey.TaprootInternalKey;
+				input.TaprootInternalKey = multiSigs[i].InternalKey;
 				input.TaprootMerkleRoot = multiSigs[i].TaprootSpendInfo.MerkleRoot;
 			}
 			return psbt;
@@ -790,11 +805,14 @@ namespace DistricutedCryptographyLib
 			if (sequence < 0)
 				throw new Exception("Invalid address sequence");
 			var (ownerXpub, memberXpubs, k) = GroupKeys(group, isChange, net);
+			if (ownerXpub == null)
+				return TaprootMultiSig.FromExtPubKeys(memberXpubs, k, (uint)sequence, net);
 			return DelegatedMultiSig.FromExtPubKeys(ownerXpub, memberXpubs, k, (uint)sequence, net);
 		}
 
-		// The owner's and the members' chain-level extended public keys and the threshold, checked.
-		private static (ExtPubKey owner, List<ExtPubKey> members, int k) GroupKeys(GroupSDT group, bool isChange, Network net)
+		// The owner's and the members' chain-level extended public keys and the threshold, checked. Multi Signature:
+		// owner = null and the owner's key is one of the members (the signers).
+		private static (ExtPubKey? owner, List<ExtPubKey> members, int k) GroupKeys(GroupSDT group, bool isChange, Network net)
 		{
 			if (group == null)
 				throw new Exception("Group is null (call FromSDT first)");
@@ -806,9 +824,14 @@ namespace DistricutedCryptographyLib
 			var owner = ExtPubKey.Parse(ownerXpub.Trim(), net);
 
 			var members = MemberXpubs(group, isChange).Select(m => ExtPubKey.Parse(m.xpub, net)).ToList();
+			var ownerless = IsOwnerless(group);
 			if (members.Count < 2)
-				throw new Exception($"At least 2 members with a {chain} extended public key are required");
-			var all = members.Select(m => m.ToString(net)).Append(owner.ToString(net)).ToList();
+				throw new Exception(ownerless
+					? $"At least 2 participants with a {chain} extended public key are required"
+					: $"At least 2 members with a {chain} extended public key are required");
+			var all = members.Select(m => m.ToString(net)).ToList();
+			if (!ownerless)
+				all.Add(owner.ToString(net));
 			if (all.Distinct().Count() != all.Count)
 				throw new Exception("Two participants of the group have the same key");
 
@@ -820,7 +843,7 @@ namespace DistricutedCryptographyLib
 			if (combinations > MaxCombinations)
 				throw new Exception($"A {k}-of-{members.Count} group has {combinations:N0} combinations of signers; the maximum is {MaxCombinations:N0}. Use fewer members, or a number of signatures closer to 1 or to all the members");
 
-			return (owner, members, k);
+			return (ownerless ? null : owner, members, k);
 		}
 
 		// C(n, k), capped: it only has to be compared with MaxCombinations
@@ -851,6 +874,17 @@ namespace DistricutedCryptographyLib
 					var xpub = isChange ? c.ExtPubKeyMultiSigChange : c.ExtPubKeyMultiSigReceiving;
 					if (!string.IsNullOrWhiteSpace(xpub))
 						members.Add((position, (c.ContactUserName ?? "").Trim(), xpub!.Trim()));
+				}
+			}
+			// Multi Signature: the owner is one more signer (position -1); his user name is the reference user of the
+			// group (set at the activation, in the owner's copy and in the members' copies)
+			if (IsOwnerless(group))
+			{
+				var ownerXpub = isChange ? group.ExtPubKeyMultiSigChange : group.ExtPubKeyMultiSigReceiving;
+				if (!string.IsNullOrWhiteSpace(ownerXpub))
+				{
+					var ownerName = (group.OtherGroup?.ReferenceUserName ?? "").Trim();
+					members.Add((-1, ownerName.Length > 0 ? ownerName : "owner", ownerXpub!.Trim()));
 				}
 			}
 			return members;
