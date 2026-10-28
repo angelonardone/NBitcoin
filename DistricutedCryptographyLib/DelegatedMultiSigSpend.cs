@@ -40,7 +40,11 @@ namespace DistricutedCryptographyLib
 		/// <summary>GroupType of the "Multi Signature" groups (Wallet.GroupType.MultiSignature).</summary>
 		public const short MultiSignatureGroupType = 60;
 
-		private static bool IsOwnerless(GroupSDT group) => group != null && group.GroupType == MultiSignatureGroupType;
+		/// <summary>GroupType of the "Multi Signature 2" groups (MuSig2 without owner, see MuSig2GroupSpend).</summary>
+		public const short MultiSignature2GroupType = 90;
+
+		// no owner: the owner of the group is one more signer (Multi Signature, Multi Signature 2)
+		internal static bool IsOwnerless(GroupSDT group) => group != null && (group.GroupType == MultiSignatureGroupType || group.GroupType == MultiSignature2GroupType);
 
 		/// <summary>How many fee levels the first signer may add to the calculated fee.</summary>
 		public const int MaxExtraFeeLevels = 3;
@@ -57,18 +61,18 @@ namespace DistricutedCryptographyLib
 		private const TaprootSigHash SigHash = TaprootSigHash.Default;
 
 		// Opt-in replace-by-fee, so a higher level can replace a lower one that is still unconfirmed.
-		private const uint InputSequence = 0xFFFFFFFD;
+		internal const uint InputSequence = 0xFFFFFFFD;
 
 		// A level may pay this much more than its nominal fee (a change below the dust limit goes to the fee).
 		private const long FeeToleranceSats = 1000;
 
-		private static readonly JsonSerializerOptions JsonIn = new JsonSerializerOptions
+		internal static readonly JsonSerializerOptions JsonIn = new JsonSerializerOptions
 		{
 			PropertyNameCaseInsensitive = true
 		};
 
 		// Input shape for the UTXOs to spend (sent by GeneXus as a JSON array).
-		private sealed class UtxoDto
+		internal sealed class UtxoDto
 		{
 			public string TxId { get; set; } = "";
 			public int Vout { get; set; }
@@ -488,7 +492,7 @@ namespace DistricutedCryptographyLib
 		// Building
 		// ---------------------------------------------------------------------
 
-		private static List<UtxoDto> ParseUtxos(string utxosJson)
+		internal static List<UtxoDto> ParseUtxos(string utxosJson)
 		{
 			var utxos = JsonSerializer.Deserialize<List<UtxoDto>>(utxosJson ?? "[]", JsonIn) ?? new List<UtxoDto>();
 			if (utxos.Count == 0)
@@ -535,7 +539,7 @@ namespace DistricutedCryptographyLib
 		private static Money LevelFee(Money baseFee, int percent) =>
 			Money.Satoshis((baseFee.Satoshi * (100 + percent) + 99) / 100);
 
-		private static Transaction BuildTransaction(List<UtxoDto> utxos, string sendTo, string amountBtc,
+		internal static Transaction BuildTransaction(List<UtxoDto> utxos, string sendTo, string amountBtc,
 			string changeAddr, Money fee, bool sendAll, Network net, string feeName)
 		{
 			var tx = net.CreateTransaction();
@@ -773,7 +777,7 @@ namespace DistricutedCryptographyLib
 			return tx;
 		}
 
-		private static void Validate(Transaction tx, TxOut[] spentOutputs)
+		internal static void Validate(Transaction tx, TxOut[] spentOutputs)
 		{
 			var validator = tx.CreateValidator(spentOutputs);
 			for (int i = 0; i < tx.Inputs.Count; i++)
@@ -847,7 +851,7 @@ namespace DistricutedCryptographyLib
 		}
 
 		// C(n, k), capped: it only has to be compared with MaxCombinations
-		private static double Combinations(int n, int k)
+		internal static double Combinations(int n, int k)
 		{
 			k = Math.Min(k, n - k);
 			double result = 1;
@@ -862,7 +866,7 @@ namespace DistricutedCryptographyLib
 
 		// The members = every contact that gave its chain-level extended public key.
 		// position = the member's place in the contact list (the same on both chains).
-		private static List<(int position, string name, string xpub)> MemberXpubs(GroupSDT group, bool isChange)
+		internal static List<(int position, string name, string xpub)> MemberXpubs(GroupSDT group, bool isChange)
 		{
 			var members = new List<(int position, string name, string xpub)>();
 			if (group.Contact != null)
@@ -909,7 +913,7 @@ namespace DistricutedCryptographyLib
 			return -1;
 		}
 
-		private static Network GetNetwork(string networkType)
+		internal static Network GetNetwork(string networkType)
 		{
 			switch ((networkType ?? "").Trim().ToLowerInvariant())
 			{
@@ -927,12 +931,12 @@ namespace DistricutedCryptographyLib
 			}
 		}
 
-		private static decimal ParseDec(string s) =>
+		internal static decimal ParseDec(string s) =>
 			decimal.Parse((s ?? "0").Trim(), NumberStyles.Any, CultureInfo.InvariantCulture);
 
-		private static string Err(string message) =>
+		internal static string Err(string message) =>
 			JsonSerializer.Serialize(new { success = false, error = message });
 
-		private static string Err(Exception e) => Err(e.Message);
+		internal static string Err(Exception e) => Err(e.Message);
 	}
 }

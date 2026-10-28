@@ -14,6 +14,10 @@ using DistricutedCryptographyLib;
 if (args.Length > 0 && args[0].StartsWith("legacy-levels"))
 	return LegacyLevelsSpike.Run(args);
 
+// The MuSig2 group wallets (DelegatedMultiSig2 / TaprootMultiSig2, signing room): see MuSig2Spike.cs.
+if (args.Length > 0 && args[0].StartsWith("musig2"))
+	return MuSig2Spike.Run(args);
+
 // The "Multi Signature" groups (TaprootMultiSig, no owner): see MultiSigSpike.cs.
 if (args.Length > 0 && args[0].StartsWith("multisig"))
 	return MultiSigSpike.Run(args);
