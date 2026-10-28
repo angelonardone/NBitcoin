@@ -1,3 +1,8 @@
+> **Outdated (2026-10-28).** `DelegatedMultiSig2` was rewritten for a live signing session of the signers present
+> (one leaf, no pre-signed fee levels, no nonces for other leaves, no session manager): see the class summary in
+> `NBitcoin/DelegatedMultiSig2.cs` (`DelegatedMultiSig2`, `TaprootMultiSig2`, `MuSig2Spend`, `MuSig2SecretNonces`)
+> and `NBitcoin.Tests/DelegatedMultiSig2Tests.cs`. This document describes the old design.
+
 # MuSig2 Session Management Design
 
 ## Problem Statement

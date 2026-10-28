@@ -1,3 +1,8 @@
+> **Outdated (2026-10-28).** `DelegatedMultiSig2` was rewritten for a live signing session of the signers present
+> (one leaf, no pre-signed fee levels, no nonces for other leaves, no session manager): see the class summary in
+> `NBitcoin/DelegatedMultiSig2.cs` (`DelegatedMultiSig2`, `TaprootMultiSig2`, `MuSig2Spend`, `MuSig2SecretNonces`)
+> and `NBitcoin.Tests/DelegatedMultiSig2Tests.cs`. This document describes the old design.
+
 # DelegatedMultiSig2 Class
 
 A comprehensive implementation of Taproot-based delegated multi-signature functionality using MuSig2 for NBitcoin, enabling an owner to delegate signing authority to a k-of-n multisig scheme while retaining full control through key spending.

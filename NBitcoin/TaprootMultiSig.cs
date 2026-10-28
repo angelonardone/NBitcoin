@@ -29,10 +29,12 @@ namespace NBitcoin
 	/// - Why not an unspendable "NUMS" key (BIP341): it also blocks the key path, but forever; the aggregate keeps
 	///   the option of a cheaper and more private n-of-n spend when every signer is online.
 	///
-	/// Key order. Plain keys: the signers in x-only order (BIP387 sortedmulti_a) and the aggregate over the keys
-	/// sorted by BIP327 KeySort. HD wallet (<see cref="FromExtPubKeys"/>): ONE order for every address, the order of
-	/// the extended public keys (<see cref="DelegatedMultiSig.SortExtPubKeys"/>), for the scripts AND the aggregate,
-	/// so the whole wallet is the single ranged descriptor of <see cref="GetRangedDescriptor"/>:
+	/// Key order. The aggregate is ALWAYS over the keys sorted by BIP327 KeySort, after the derivation: BIP390
+	/// ("Keys must be sorted with the KeySort algorithm after all derivation and prior to aggregation"), so a
+	/// musig() descriptor gives this address in any wallet. The scripts: plain keys in x-only order (BIP387
+	/// sortedmulti_a); HD wallet (<see cref="FromExtPubKeys"/>) in ONE order for every address, the order of the
+	/// extended public keys (<see cref="DelegatedMultiSig.SortExtPubKeys"/>), so the whole wallet is the single
+	/// ranged descriptor of <see cref="GetRangedDescriptor"/>:
 	///   tr(musig(xpubA/*,xpubB/*,...),{sortedmulti_a(k,xpubA/*,...),...})
 	/// </summary>
 	public class TaprootMultiSig : DelegatedMultiSig
@@ -56,14 +58,15 @@ namespace NBitcoin
 
 		/// <summary>
 		/// Builds the multisig of an HD wallet at one address index: every key is the child <paramref name="index"/>
-		/// of its extended public key, in the order of the extended public keys for the scripts and the aggregate.
+		/// of its extended public key, in the order of the extended public keys for the scripts; the aggregate is
+		/// over the derived keys in KeySort order (BIP390).
 		/// </summary>
 		public static TaprootMultiSig FromExtPubKeys(IEnumerable<ExtPubKey> signerExtPubKeys, int requiredSignatures, uint index, Network network)
 		{
 			if (signerExtPubKeys == null)
 				throw new ArgumentNullException(nameof(signerExtPubKeys));
 			var keys = SortExtPubKeys(signerExtPubKeys).Select(extPubKey => extPubKey.Derive(index).PubKey).ToList();
-			return new TaprootMultiSig(keys, requiredSignatures, network, sortSigners: false, keys);
+			return new TaprootMultiSig(keys, requiredSignatures, network, sortSigners: false, KeySort(keys));
 		}
 
 		/// <summary>The address of an HD wallet at one index (see <see cref="FromExtPubKeys"/>).</summary>

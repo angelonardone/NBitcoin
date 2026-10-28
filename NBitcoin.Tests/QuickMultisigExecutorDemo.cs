@@ -306,30 +306,8 @@ namespace NBitcoin.Tests
             spendingTx.Outputs.Add(Money.Coins(0.5m), await rpc.GetNewAddressAsync());
             spendingTx.Outputs.Add(Money.Coins(0.499m), await rpc.GetNewAddressAsync());
             
-            var builder = multiSig.CreateSignatureBuilder(spendingTx, new[] { coin });
-            var selectedSigners = signerKeys.Take(k).ToList();
-            
-            // Nonce exchange
-            var nonces = new List<DelegatedMultiSig2.MuSig2NonceData>();
-            foreach (var signer in selectedSigners)
-            {
-                var nonceData = builder.GenerateNonce(signer, 0, TaprootSigHash.All);
-                nonces.Add(nonceData);
-            }
-            
-            foreach (var nonce in nonces)
-            {
-                builder.AddNonces(nonce, 0);
-            }
-            
-            // Signing
-            foreach (var signer in selectedSigners)
-            {
-                var sigData = builder.SignWithSigner(signer, 0, TaprootSigHash.All);
-                if (sigData.IsComplete) break;
-            }
-            
-            var finalTx = builder.FinalizeTransaction(0);
+            // MuSig2: the first k signers present sign the leaf of their combination
+            var finalTx = DelegatedMultiSig2Tests.SignLive(multiSig, spendingTx, coin.TxOut, signerKeys);
             var broadcastTxId = await rpc.SendRawTransactionAsync(finalTx);
             var actualTx = await rpc.GetRawTransactionAsync(broadcastTxId);
             

@@ -101,9 +101,9 @@ namespace NBitcoin.Tests
 			{
 				var a = TaprootMultiSig.FromExtPubKeys(xpubs, 3, index, Net).Address;
 				Assert.Equal(a, TaprootMultiSig.FromExtPubKeys(xpubs.OrderBy(_ => rnd.Next()).ToList(), 3, index, Net).Address);
-				// the aggregate of an HD address is in the order of the extended public keys
-				var ordered = DelegatedMultiSig.SortExtPubKeys(xpubs).Select(x => x.Derive(index).PubKey).ToList();
-				Assert.Equal(TaprootMultiSig.AggregateInternalKey(ordered), TaprootMultiSig.FromExtPubKeys(xpubs, 3, index, Net).InternalKey);
+				// the aggregate of an HD address is over the derived keys in KeySort order (BIP390)
+				var sorted = TaprootMultiSig.KeySort(xpubs.Select(x => x.Derive(index).PubKey));
+				Assert.Equal(TaprootMultiSig.AggregateInternalKey(sorted), TaprootMultiSig.FromExtPubKeys(xpubs, 3, index, Net).InternalKey);
 			}
 		}
 
@@ -134,6 +134,27 @@ namespace NBitcoin.Tests
 
 		[Fact]
 		[Trait("UnitTest", "UnitTest")]
+		public void MuSigDescriptorGivesTheAddressUnderBip390()
+		{
+			// NBitcoin's descriptor parser computes musig() as BIP390 says (KeySort after the derivation, before
+			// KeyAgg; checked against the BIP's own vector in MiniscriptTests.CanParseMusigExpression). The musig()
+			// descriptor of every HD address must give that address.
+			var settings = new NBitcoin.WalletPolicies.MiniscriptParsingSettings(Net) { Dialect = NBitcoin.WalletPolicies.MiniscriptDialect.BIP388 };
+			for (int run = 0; run < 5; run++)
+			{
+				var xpubs = Enumerable.Range(0, 4).Select(_ => new ExtKey().Neuter()).ToList();
+				for (uint index = 0; index < 4; index++)
+				{
+					var ms = TaprootMultiSig.FromExtPubKeys(xpubs, 2, index, Net);
+					var descriptor = ms.GetMuSigDescriptor();
+					var parsed = NBitcoin.WalletPolicies.Miniscript.Parse(descriptor.Substring(0, descriptor.IndexOf('#')), settings);
+					Assert.Equal(ms.Address.ScriptPubKey, parsed.ToScripts().ScriptPubKey);
+				}
+			}
+		}
+
+		[Fact]
+		[Trait("UnitTest", "UnitTest")]
 		public void TheLimitOfOneScriptPerCombinationIsEnforced()
 		{
 			// one script per combination of k signers: 15-of-50 would need C(50,15) = 2,250,829,575,120 scripts
@@ -150,22 +171,27 @@ namespace NBitcoin.Tests
 		[Trait("UnitTest", "UnitTest")]
 		public void BitcoinCoreDerivesTheAddressesFromTheDescriptors()
 		{
-			using var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v25_0, Net);
+			// Bitcoin Core 30 reads BIP390 musig(); the plain descriptor (aggregate as an x-only key) is checked too
+			using var nodeBuilder = NodeBuilder.Create(NodeDownloadData.Bitcoin.v30_2, Net);
 			var rpc = nodeBuilder.CreateNode().CreateRPCClient();
 			nodeBuilder.StartAll();
 			foreach (var (k, n) in new[] { (2, 3), (3, 5), (4, 7), (2, 9), (7, 9) })
 			{
 				var xpubs = Enumerable.Range(0, n).Select(_ => new ExtKey().Neuter()).ToList();
+				var ranged = (JArray)rpc.SendCommand("deriveaddresses", TaprootMultiSig.GetRangedDescriptor(xpubs, k, Net), new JArray(0, 4)).Result;
 				for (uint index = 0; index < 5; index++)
 				{
-					// Bitcoin Core 25 has no musig(): the aggregate goes as a plain x-only key (GetDescriptor)
 					var ms = TaprootMultiSig.FromExtPubKeys(xpubs, k, index, Net);
-					var derived = (JArray)rpc.SendCommand("deriveaddresses", ms.GetDescriptor()).Result;
-					Assert.Equal(ms.Address.ToString(), derived[0].Value<string>());
-					var info = (JObject)rpc.SendCommand("getdescriptorinfo", ms.GetDescriptor()).Result;
-					Assert.EndsWith("#" + info["checksum"].Value<string>(), ms.GetDescriptor());
+					Assert.Equal(ms.Address.ToString(), ranged[(int)index].Value<string>());
+					foreach (var descriptor in new[] { ms.GetDescriptor(), ms.GetMuSigDescriptor() })
+					{
+						var derived = (JArray)rpc.SendCommand("deriveaddresses", descriptor).Result;
+						Assert.Equal(ms.Address.ToString(), derived[0].Value<string>());
+						var info = (JObject)rpc.SendCommand("getdescriptorinfo", descriptor).Result;
+						Assert.EndsWith("#" + info["checksum"].Value<string>(), descriptor);
+					}
 				}
-				_output.WriteLine($"{k}-of-{n}: Bitcoin Core derives indexes 0-4 from the descriptors");
+				_output.WriteLine($"{k}-of-{n}: Bitcoin Core 30 derives indexes 0-4 from the ranged musig() descriptor and from both per-address descriptors");
 			}
 		}
 

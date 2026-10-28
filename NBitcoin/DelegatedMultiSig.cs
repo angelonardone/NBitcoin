@@ -246,25 +246,31 @@ namespace NBitcoin
 		// on how the priority queue breaks the ties.)
 		private void CreateTaprootSpendInfo()
 		{
-			var builder = new TaprootBuilder();
-			AddSubTree(builder, 0, _scripts.Count, 0);
-			_taprootSpendInfo = builder.Finalize(_internalKey);
+			_taprootSpendInfo = BuildDefinedTree(_internalKey, _scripts);
 		}
 
-		private void AddSubTree(TaprootBuilder builder, int start, int count, uint depth)
+		// The defined tree of CreateTaprootSpendInfo, also used by DelegatedMultiSig2.
+		internal static TaprootSpendInfo BuildDefinedTree(TaprootInternalPubKey internalKey, IReadOnlyList<TapScript> scripts)
+		{
+			var builder = new TaprootBuilder();
+			AddSubTree(builder, scripts, 0, scripts.Count, 0);
+			return builder.Finalize(internalKey);
+		}
+
+		private static void AddSubTree(TaprootBuilder builder, IReadOnlyList<TapScript> scripts, int start, int count, uint depth)
 		{
 			if (count == 1)
 			{
-				builder.AddLeaf(depth, _scripts[start]);
+				builder.AddLeaf(depth, scripts[start]);
 				return;
 			}
 			var left = (count + 1) / 2;
-			AddSubTree(builder, start, left, depth + 1);
-			AddSubTree(builder, start + left, count - left, depth + 1);
+			AddSubTree(builder, scripts, start, left, depth + 1);
+			AddSubTree(builder, scripts, start + left, count - left, depth + 1);
 		}
 
 		// The same tree written as a descriptor (BIP386): "leaf" or "{left,right}".
-		private static string TreeExpression(IReadOnlyList<string> leaves, int start, int count)
+		internal static string TreeExpression(IReadOnlyList<string> leaves, int start, int count)
 		{
 			if (count == 1)
 				return leaves[start];
@@ -327,7 +333,7 @@ namespace NBitcoin
 			return NBitcoin.WalletPolicies.Miniscript.AddChecksum($"tr({ownerExtPubKey.ToString(network)}/*,{TreeExpression(leaves, 0, leaves.Count)})");
 		}
 
-		private static double CalculateCombinationCount(int n, int k)
+		internal static double CalculateCombinationCount(int n, int k)
 		{
 			if (k > n || k < 0) return 0;
 			if (k == 0 || k == n) return 1;
@@ -349,7 +355,7 @@ namespace NBitcoin
 
 		// The k-combinations of the signers 0..n-1 in lexicographic order. The order is part of the address
 		// (it fixes the place of every script in the tree), so it must never depend on n or k.
-		private static List<int[]> GetCombinations(int n, int k)
+		internal static List<int[]> GetCombinations(int n, int k)
 		{
 			if (k == 0) return new List<int[]>();
 			return GetCombinationsBase(n, k);

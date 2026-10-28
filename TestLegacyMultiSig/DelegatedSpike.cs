@@ -693,12 +693,13 @@ static class DelegatedSpike
 			{
 				var ms2 = new DelegatedMultiSig2(owner.PubKey, pubs, k, Net);
 				var coin = new Coin(new OutPoint(uint256.One, 0), new TxOut(Money.Coins(1m), ms2.Address));
-				var builder = ms2.CreateSignatureBuilder(NewTx(coin), new ICoin[] { coin });
-				var nonces = signers.Take(k).Select(key => builder.GenerateNonce(key, 0, TaprootSigHash.All)).ToList();
-				foreach (var nonce in nonces) builder.AddNonces(nonce, 0);
-				foreach (var key in signers.Take(k))
-					if (builder.SignWithSigner(key, 0, TaprootSigHash.All).IsComplete) break;
-				var tx = builder.FinalizeTransaction(0);
+				// the first k signers (signer order) present: nonces, partial signatures, aggregate
+				var spend = MuSig2Spend.ScriptPath(NewTx(coin), new[] { coin.TxOut }, new[] { ms2 }, Enumerable.Range(0, k));
+				var present = spend.Signers.ToDictionary(s => s, s => (IReadOnlyList<Key>)new[] { signers.First(key => key.PubKey == ms2.SignerPubKeys[s]) });
+				var secrets = present.Keys.ToDictionary(s => s, s => spend.CreateNonces(s));
+				var nonces = secrets.ToDictionary(s => s.Key, s => s.Value.PublicNonces);
+				var partials = present.ToDictionary(p => p.Key, p => spend.Sign(p.Value, secrets[p.Key], nonces));
+				var tx = spend.Finalize(nonces, partials);
 				var witness = tx.Inputs[0].WitScript;
 				var depth = (witness.GetUnsafePush(witness.PushCount - 1).Length - 33) / 32;
 				delegated2 = $"{tx.GetVirtualSize()}{Valid(tx, coin)} (depth {depth})";
