@@ -93,6 +93,12 @@ namespace DistricutedCryptographyLib
 			return MuSig2GroupSpend.Finalize(_group, sessionJson, publicNoncesJson, partialSignaturesJson, networkType);
 		}
 
+		// Checks the coins of a session against the previous transactions ({"txid": "raw hex"}) read from the network.
+		public string VerifyCoins(string sessionJson, string prevTxsJson, string networkType)
+		{
+			return MuSig2GroupSpend.VerifyCoins(_group, sessionJson, prevTxsJson, networkType);
+		}
+
 		// Wipes the secret nonces of a session in this app.
 		public string Abort(string sessionId)
 		{

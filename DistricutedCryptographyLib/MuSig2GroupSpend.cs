@@ -28,8 +28,8 @@ namespace DistricutedCryptographyLib
 	///   anybody <see cref="Finalize"/>: checks every partial signature, returns the signed transaction.
 	/// <see cref="Abort"/> wipes the secret nonces of a session (a member left, timeout, cancel).
 	///
-	/// The session cannot prove that its coins exist with the amounts it says: each member's wallet checks them
-	/// against its own list of the group's coins before round 1. A lie there cannot steal anything (BIP341: every
+	/// The session cannot prove that its coins exist with the amounts it says: each signer checks them against the
+	/// previous transactions read from his own Electrum server before round 1 (<see cref="VerifyCoins"/>). A lie there cannot steal anything (BIP341: every
 	/// signature commits to all the spent outputs, so the transaction would be invalid), but the fee shown would be wrong.
 	///
 	/// Every method returns a JSON string and never throws toward GeneXus (same convention as DelegatedMultiSigSpend).
@@ -358,7 +358,8 @@ namespace DistricutedCryptographyLib
 					error = "",
 					sessionId = loaded.Spend.Id.ToString(),
 					signer = NameOf(loaded, signer),
-					publicNonces = nonces.PublicNonces.Select(n => Encoders.Hex.EncodeData(n)).ToArray()
+					// a JSON array as TEXT: GeneXus keeps it and joins it into the {"user": [...]} map as it is
+					publicNonces = JsonSerializer.Serialize(nonces.PublicNonces.Select(n => Encoders.Hex.EncodeData(n)).ToArray())
 				});
 			}
 			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
@@ -397,7 +398,7 @@ namespace DistricutedCryptographyLib
 					error = "",
 					sessionId = loaded.Spend.Id.ToString(),
 					signer = NameOf(loaded, signer),
-					partialSignatures = partials.Select(p => Encoders.Hex.EncodeData(p)).ToArray()
+					partialSignatures = JsonSerializer.Serialize(partials.Select(p => Encoders.Hex.EncodeData(p)).ToArray())
 				});
 			}
 			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
@@ -435,6 +436,42 @@ namespace DistricutedCryptographyLib
 					feeBtc = loaded.Fee.ToDecimal(MoneyUnit.BTC),
 					vsize = signed.GetVirtualSize()
 				});
+			}
+			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
+		}
+
+		/// <summary>
+		/// Checks the coins of a session against the previous transactions (<paramref name="prevTxsJson"/> =
+		/// {"txid": "raw hex", ...}, read by each member from his own Electrum server): every input must spend an
+		/// output with exactly the amount the session says, at the group address of its sequence. A signer runs it
+		/// before round 1, so the fee he is shown is the real one.
+		/// </summary>
+		public static string VerifyCoins(GroupSDT group, string sessionJson, string prevTxsJson, string networkType)
+		{
+			try
+			{
+				var net = DelegatedMultiSigSpend.GetNetwork(networkType);
+				var loaded = Load(group, sessionJson, net);
+				var prevTxs = JsonSerializer.Deserialize<Dictionary<string, string>>(string.IsNullOrWhiteSpace(prevTxsJson) ? "{}" : prevTxsJson.Trim(), DelegatedMultiSigSpend.JsonIn)
+					?? new Dictionary<string, string>();
+				for (int i = 0; i < loaded.Session.Inputs.Count; i++)
+				{
+					var input = loaded.Session.Inputs[i];
+					var txid = input.TxId.Trim();
+					if (!prevTxs.TryGetValue(txid, out var hex) || string.IsNullOrWhiteSpace(hex))
+						return DelegatedMultiSigSpend.Err($"The coin {txid}:{input.Vout} could not be read from the network");
+					var prev = Transaction.Parse(hex.Trim(), net);
+					if (prev.GetHash() != uint256.Parse(txid))
+						return DelegatedMultiSigSpend.Err($"The network gave another transaction for the coin {txid}");
+					if (input.Vout < 0 || input.Vout >= prev.Outputs.Count)
+						return DelegatedMultiSigSpend.Err($"The coin {txid}:{input.Vout} does not exist");
+					var output = prev.Outputs[input.Vout];
+					if (output.Value != loaded.Spent[i].Value)
+						return DelegatedMultiSigSpend.Err($"The coin {txid}:{input.Vout} has {output.Value.ToDecimal(MoneyUnit.BTC)} BTC, not the {loaded.Spent[i].Value.ToDecimal(MoneyUnit.BTC)} the payment says");
+					if (output.ScriptPubKey != loaded.Spent[i].ScriptPubKey)
+						return DelegatedMultiSigSpend.Err($"The coin {txid}:{input.Vout} is not at the group address the payment says");
+				}
+				return JsonSerializer.Serialize(new { success = true, error = "", inputs = loaded.Session.Inputs.Count, feeBtc = loaded.Fee.ToDecimal(MoneyUnit.BTC) });
 			}
 			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
 		}
@@ -576,7 +613,8 @@ namespace DistricutedCryptographyLib
 				session = sessionJson ?? "",
 				sessionId = loaded.Spend.Id.ToString(),
 				path = loaded.Session.Path,
-				signers = loaded.Spend.Signers.Select(s => NameOf(loaded, s)).ToArray(),
+				// comma separated (user names have no commas): no collection of texts in the GeneXus SDT
+				signers = string.Join(",", loaded.Spend.Signers.Select(s => NameOf(loaded, s))),
 				required = loaded.MultiSigs[0].RequiredSignatures,
 				iAmSigner = mine >= 0 && loaded.Spend.Signers.Contains(mine),
 				me = mine >= 0 ? NameOf(loaded, mine) : "",

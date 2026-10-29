@@ -95,7 +95,7 @@ static class MuSig2Spike
 		{
 			var r = J(p.App.CreateNonces(session, p.ReceivingXpub, p.ChangeXpub, "regtest"));
 			if (!Ok(r)) return (r, "", "");
-			nonces[S(r, "signer")] = r.GetProperty("publicNonces").EnumerateArray().Select(x => x.GetString()!).ToArray();
+			nonces[S(r, "signer")] = JsonSerializer.Deserialize<string[]>(S(r, "publicNonces"))!;
 		}
 		var noncesJson = JsonSerializer.Serialize(nonces);
 		var partials = new Dictionary<string, string[]>();
@@ -103,7 +103,7 @@ static class MuSig2Spike
 		{
 			var r = J(p.App.Sign(session, noncesJson, p.ReceivingXprv, p.ChangeXprv, "regtest"));
 			if (!Ok(r)) return (r, noncesJson, "");
-			partials[S(r, "signer")] = r.GetProperty("partialSignatures").EnumerateArray().Select(x => x.GetString()!).ToArray();
+			partials[S(r, "signer")] = JsonSerializer.Deserialize<string[]>(S(r, "partialSignatures"))!;
 		}
 		var partialsJson = JsonSerializer.Serialize(partials);
 		return (J(finalizer.App.Finalize(session, noncesJson, partialsJson, "regtest")), noncesJson, partialsJson);
@@ -211,7 +211,7 @@ static class MuSig2Spike
 
 		var all = J(owner.App.BuildSession(coins, sendTo, "0.3", changeTo, 0, "0.0001", false, "all", "regtest"));
 		var d = J(m[0].App.DescribeSession(S(all, "session"), m[0].ReceivingXpub, m[0].ChangeXpub, "regtest"));
-		Check("\"all\": 4 signers, key path", Ok(d) && S(d, "path") == "all" && d.GetProperty("signers").GetArrayLength() == 4, d.ToString().Substring(0, Math.Min(160, d.ToString().Length)));
+		Check("\"all\": 4 signers, key path", Ok(d) && S(d, "path") == "all" && S(d, "signers").Split(',').Length == 4, d.ToString().Substring(0, Math.Min(160, d.ToString().Length)));
 		var (r2, _, _) = Room(S(all, "session"), m.Prepend(owner), m[2]);
 		Check($"all 4 present: key path, vsize {(Ok(r2) ? r2.GetProperty("vsize").GetInt32() : 0)} < leaf {(Ok(r1) ? r1.GetProperty("vsize").GetInt32() : 0)}",
 			Ok(r2) && Ok(r1) && r2.GetProperty("vsize").GetInt32() < r1.GetProperty("vsize").GetInt32(), Ok(r2) ? "" : ErrOf(r2));
@@ -249,13 +249,29 @@ static class MuSig2Spike
 		ExpectError("the same member twice", m[1].App.DescribeSession(Edit((_, d) => d["Signers"] = new[] { m[0].Name, m[0].Name }), m[1].ReceivingXpub, m[1].ChangeXpub, "regtest"), "twice");
 		ExpectError("an amount that does not match the coin (more fee than it says)", m[1].App.DescribeSession(Edit((e, d) => d["Inputs"] = e.GetProperty("Inputs").EnumerateArray().Select(i => new { TxId = i.GetProperty("TxId").GetString(), Vout = i.GetProperty("Vout").GetInt32(), AmountBtc = "0.0001", Sequence = i.GetProperty("Sequence").GetInt32(), IsChange = false }).ToArray()), m[1].ReceivingXpub, m[1].ChangeXpub, "regtest"), "no fee");
 
+		// the coins checked against the previous transactions (what each signer reads from Electrum)
+		var coin = J(coins)[0];
+		var prev = Net.CreateTransaction();
+		prev.Inputs.Add(new TxIn(new OutPoint(uint256.One, 0)));
+		prev.Outputs.Add(Money.Coins(1.0m), BitcoinAddress.Create(S(J(m[0].App.CreateAddress(0, false, "regtest")), "address"), Net));
+		var honest = Edit((e, d) => d["Inputs"] = new[] { new { TxId = prev.GetHash().ToString(), Vout = 0, AmountBtc = "1.0", Sequence = 0, IsChange = false } });
+		var honestTx = Transaction.Parse(S(J(honest), "Tx"), Net);
+		honestTx.Inputs[0].PrevOut = new OutPoint(prev.GetHash(), 0);
+		honest = JsonSerializer.Serialize(JsonSerializer.Deserialize<Dictionary<string, object?>>(honest)!.Select(kv => kv.Key == "Tx" ? new KeyValuePair<string, object?>(kv.Key, honestTx.ToHex()) : kv).ToDictionary(kv => kv.Key, kv => kv.Value));
+		var prevs = JsonSerializer.Serialize(new Dictionary<string, string> { [prev.GetHash().ToString()] = prev.ToHex() });
+		var ok = J(m[1].App.VerifyCoins(honest, prevs, "regtest"));
+		Check("VerifyCoins: the coin of the session is the network's", Ok(ok), Ok(ok) ? "" : ErrOf(ok));
+		var lying = honest.Replace("\"AmountBtc\":\"1.0\"", "\"AmountBtc\":\"1.1\"");
+		ExpectError("VerifyCoins: a session that lies on the amount of a coin", m[1].App.VerifyCoins(lying, prevs, "regtest"), "not the 1.1");
+		ExpectError("VerifyCoins: a coin the network does not have", m[1].App.VerifyCoins(honest, "{}", "regtest"), "could not be read");
+
 		// nonces: Abort wipes them; a Retry replaces them
 		var n0 = J(m[0].App.CreateNonces(good, m[0].ReceivingXpub, m[0].ChangeXpub, "regtest"));
 		var n1 = J(m[1].App.CreateNonces(good, m[1].ReceivingXpub, m[1].ChangeXpub, "regtest"));
 		var map = JsonSerializer.Serialize(new Dictionary<string, string[]>
 		{
-			[m[0].Name] = n0.GetProperty("publicNonces").EnumerateArray().Select(x => x.GetString()!).ToArray(),
-			[m[1].Name] = n1.GetProperty("publicNonces").EnumerateArray().Select(x => x.GetString()!).ToArray()
+			[m[0].Name] = JsonSerializer.Deserialize<string[]>(S(n0, "publicNonces"))!,
+			[m[1].Name] = JsonSerializer.Deserialize<string[]>(S(n1, "publicNonces"))!
 		});
 		var aborted = J(MuSig2GroupSpend.Abort(S(n0, "sessionId")));
 		Check("Abort wipes the secret nonces of both members of this app", Ok(aborted) && aborted.GetProperty("removed").GetInt32() == 2);
