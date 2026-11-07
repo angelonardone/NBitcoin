@@ -31,23 +31,24 @@ internal static class KbFlowTests
 
 		// New wallet: a new oracle, paired with Ruby; the user sets the wallet up on Ruby (here: the debug mnemonic)
 		var created = J(p.CreateOracle());
-		var oracleState = created.GetProperty("oracleState").GetString()!;
+		var oracleKey = created.GetProperty("oracleKey").GetString()!;
+		var oracleState = created.GetProperty("encryptedOracle").GetString()!;
 		check("CreateOracle", created.GetProperty("success").GetBoolean() && created.GetProperty("publicKey").GetString()!.Length == 66, "");
-		var paired = J(p.Pair(device, oracleState));
+		var paired = J(p.Pair(device, oracleKey, oracleState));
 		check("Pair", paired.GetProperty("success").GetBoolean(), paired.ToString());
 		c.DebugSetMnemonic(mnemonic);
 
-		var unlock = J(p.Unlock(device, NetworkType, oracleState));
+		var unlock = J(p.Unlock(device, NetworkType, oracleKey, oracleState));
 		check("first Unlock sets the PIN", unlock.GetProperty("success").GetBoolean() && unlock.GetProperty("unlocked").GetBoolean()
 			&& unlock.GetProperty("oracleResult").GetString() == "set_pin", unlock.GetProperty("oracleResult").GetString() ?? "");
-		oracleState = unlock.GetProperty("oracleState").GetString()!; // the wallet saves it
+		oracleState = unlock.GetProperty("encryptedOracle").GetString()!; // the wallet saves it
 
 		// The wallet is opened again later
 		J(p.Logout(device));
-		unlock = J(p.Unlock(device, NetworkType, oracleState));
+		unlock = J(p.Unlock(device, NetworkType, oracleKey, oracleState));
 		check("Unlock with the PIN", unlock.GetProperty("unlocked").GetBoolean() && unlock.GetProperty("oracleResult").GetString() == "get_pin"
 			&& unlock.GetProperty("state").GetString() == "READY", unlock.GetProperty("oracleResult").GetString() ?? "");
-		oracleState = unlock.GetProperty("oracleState").GetString()!;
+		oracleState = unlock.GetProperty("encryptedOracle").GetString()!;
 
 		// Public info = what NBitcoin.CreateExtKey gives for the software wallet
 		var master = new Mnemonic(mnemonic).DeriveExtKey();
@@ -110,16 +111,19 @@ internal static class KbFlowTests
 		// Wrong PIN: not unlocked, the oracle state changed (attempt counted) and must be saved
 		c.DebugSetPin(999999);
 		J(p.Logout(device));
-		var wrong = J(p.Unlock(device, NetworkType, oracleState));
+		var wrong = J(p.Unlock(device, NetworkType, oracleKey, oracleState));
 		check("Unlock wrong PIN", wrong.GetProperty("success").GetBoolean() && !wrong.GetProperty("unlocked").GetBoolean()
 			&& wrong.GetProperty("oracleResult").GetString() == "bad_pin 1/3"
-			&& wrong.GetProperty("oracleState").GetString() != oracleState, wrong.GetProperty("oracleResult").GetString() ?? "");
-		oracleState = wrong.GetProperty("oracleState").GetString()!;
+			&& wrong.GetProperty("encryptedOracle").GetString() != oracleState, wrong.GetProperty("oracleResult").GetString() ?? "");
+		oracleState = wrong.GetProperty("encryptedOracle").GetString()!;
 		c.DebugSetPin(234567);
-		check("Unlock right PIN after", J(p.Unlock(device, NetworkType, oracleState)).GetProperty("unlocked").GetBoolean(), "");
+		check("Unlock right PIN after", J(p.Unlock(device, NetworkType, oracleKey, oracleState)).GetProperty("unlocked").GetBoolean(), "");
+
+		// The oracle state in the file is encrypted: another key can not open it
+		check("Unlock with another oracle key", !J(p.Unlock(device, NetworkType, Convert.ToBase64String(new byte[32]), oracleState)).GetProperty("success").GetBoolean(), "");
 
 		// A broken oracle state is reported, not thrown
-		check("Unlock with a bad oracle state", !J(p.Unlock(device, NetworkType, "{}")).GetProperty("success").GetBoolean(), "");
+		check("Unlock with a bad oracle state", !J(p.Unlock(device, NetworkType, oracleKey, "AAAA")).GetProperty("success").GetBoolean(), "");
 
 		c.DebugCleanReset();
 		RubyProcessor.Disconnect(device);

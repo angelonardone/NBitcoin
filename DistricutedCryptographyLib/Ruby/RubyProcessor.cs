@@ -12,9 +12,9 @@ namespace DistricutedCryptographyLib
 	/// port ("COM5", "/dev/ttyUSB0") or "tcp:host:port" for the emulator. `networkType` is the wallet NetworkType
 	/// ("MainNet", "TestNet", "RegTest").
 	///
-	/// A Ruby wallet keeps in its file, encrypted with the wallet password, the state of its blind oracle
-	/// (RubyPinOracle). Every call that may ask the PIN returns the new oracle state, also on errors: the wallet must
-	/// save it again.
+	/// A Ruby wallet keeps in its file the state of its blind oracle (RubyPinOracle), encrypted with an oracle key that
+	/// lives inside the password-protected wallet secret. Every call that may ask the PIN returns the new encrypted
+	/// state, also on errors: the wallet must save it again.
 	/// </summary>
 	public class RubyProcessor
 	{
@@ -28,9 +28,9 @@ namespace DistricutedCryptographyLib
 
 		private static object? V(IDictionary<string, object?> map, string key) => map.TryGetValue(key, out var v) ? v : null;
 
-		private static string Err(string message, string? oracleState = null) => oracleState == null
+		private static string Err(string message, string? encryptedOracle = null) => encryptedOracle == null
 			? JsonSerializer.Serialize(new { success = false, error = message })
-			: JsonSerializer.Serialize(new { success = false, error = message, oracleState });
+			: JsonSerializer.Serialize(new { success = false, error = message, encryptedOracle });
 
 		// The open client of a device; a broken connection is dropped and opened again on the next call.
 		private static T WithClient<T>(string device, Func<RubyClient, T> action)
@@ -127,19 +127,70 @@ namespace DistricutedCryptographyLib
 
 		// ---------------------------------------------------------------- oracle and PIN
 
-		/// <summary>A new blind oracle for a new Ruby wallet: {"success", "oracleState", "publicKey"}.</summary>
+		// The oracle state is kept in the wallet file as AES-256-GCM under a random "oracle key"; the oracle key travels
+		// inside the wallet secret that the password protects (Argon2, ExtendeSecretAndAuthenticator.OracleKey). So
+		// the state, which changes on every unlock, is saved again without a new Argon2 (seconds) each time, and its
+		// clear text never reaches GeneXus. Format: base64(nonce(12) || ciphertext || tag(16)).
+		private static readonly byte[] OracleAad = System.Text.Encoding.ASCII.GetBytes("distributedcryptography-ruby-oracle-v1");
+
+		internal static string EncryptOracle(string oracleKey, RubyPinOracle oracle)
+		{
+			var key = Convert.FromBase64String(oracleKey);
+			var plain = System.Text.Encoding.UTF8.GetBytes(oracle.ExportState());
+			var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(12);
+			var cipher = new byte[plain.Length];
+			var tag = new byte[16];
+			using (var gcm = new System.Security.Cryptography.AesGcm(key, 16))
+				gcm.Encrypt(nonce, plain, cipher, tag, OracleAad);
+			System.Security.Cryptography.CryptographicOperations.ZeroMemory(plain);
+			System.Security.Cryptography.CryptographicOperations.ZeroMemory(key);
+			return Convert.ToBase64String(nonce.Concat(cipher).Concat(tag).ToArray());
+		}
+
+		internal static RubyPinOracle DecryptOracle(string oracleKey, string encryptedOracle)
+		{
+			var key = Convert.FromBase64String(oracleKey);
+			var data = Convert.FromBase64String(encryptedOracle);
+			if (key.Length != 32 || data.Length < 12 + 16 + 1)
+				throw new FormatException("Invalid oracle key or data");
+			var plain = new byte[data.Length - 28];
+			using (var gcm = new System.Security.Cryptography.AesGcm(key, 16))
+				gcm.Decrypt(data.AsSpan(0, 12), data.AsSpan(12, plain.Length), data.AsSpan(12 + plain.Length), plain, OracleAad);
+			System.Security.Cryptography.CryptographicOperations.ZeroMemory(key);
+			try
+			{
+				return RubyPinOracle.FromState(System.Text.Encoding.UTF8.GetString(plain));
+			}
+			finally
+			{
+				System.Security.Cryptography.CryptographicOperations.ZeroMemory(plain);
+			}
+		}
+
+		/// <summary>
+		/// A new blind oracle for a new Ruby wallet: {"success", "oracleKey" (to keep inside the password-protected
+		/// wallet secret), "encryptedOracle" (to keep in the wallet file), "publicKey"}.
+		/// </summary>
 		public string CreateOracle()
 		{
 			var oracle = RubyPinOracle.Create();
-			return Ok(new { success = true, error = "", oracleState = oracle.ExportState(), publicKey = oracle.PublicKeyHex });
+			var oracleKey = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+			return Ok(new
+			{
+				success = true,
+				error = "",
+				oracleKey,
+				encryptedOracle = EncryptOracle(oracleKey, oracle),
+				publicKey = oracle.PublicKeyHex
+			});
 		}
 
 		/// <summary>Pairs Ruby with the oracle of the wallet (before Ruby has a PIN). The user confirms on Ruby.</summary>
-		public string Pair(string device, string oracleState)
+		public string Pair(string device, string oracleKey, string encryptedOracle)
 		{
 			try
 			{
-				var oracle = RubyPinOracle.FromState(oracleState);
+				var oracle = DecryptOracle(oracleKey, encryptedOracle);
 				return WithClient(device, c => Ok(new { success = c.UpdatePinServer(OracleUrl, oracle.PublicKey), error = "" }));
 			}
 			catch (Exception e)
@@ -151,15 +202,15 @@ namespace DistricutedCryptographyLib
 		/// <summary>
 		/// Unlocks Ruby: the user enters the PIN on Ruby and the oracle of the wallet answers. On a Ruby without a
 		/// wallet, Ruby first guides the user to create or restore one and to choose the PIN.
-		/// Returns {"success", "unlocked" (false = wrong PIN), "oracleResult", "state", "oracleState"}; the oracle
-		/// state is returned also on errors and must be saved.
+		/// Returns {"success", "unlocked" (false = wrong PIN), "oracleResult", "state", "encryptedOracle"}: the new
+		/// encrypted oracle state, returned also on errors, that the wallet must save in its file.
 		/// </summary>
-		public string Unlock(string device, string networkType, string oracleState)
+		public string Unlock(string device, string networkType, string oracleKey, string encryptedOracle)
 		{
 			RubyPinOracle oracle;
 			try
 			{
-				oracle = RubyPinOracle.FromState(oracleState);
+				oracle = DecryptOracle(oracleKey, encryptedOracle);
 			}
 			catch (Exception e)
 			{
@@ -181,7 +232,7 @@ namespace DistricutedCryptographyLib
 							unlocked,
 							oracleResult = oracle.LastResult,
 							state,
-							oracleState = oracle.ExportState()
+							encryptedOracle = EncryptOracle(oracleKey, oracle)
 						});
 					}
 					finally
@@ -192,7 +243,7 @@ namespace DistricutedCryptographyLib
 			}
 			catch (Exception e)
 			{
-				return Err(e.Message, oracle.ExportState());
+				return Err(e.Message, EncryptOracle(oracleKey, oracle));
 			}
 		}
 
