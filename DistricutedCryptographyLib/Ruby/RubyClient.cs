@@ -122,25 +122,45 @@ namespace DistricutedCryptographyLib
 			lock (_sync)
 			{
 				object? prms = parameters;
+				Exception? oracleError = null;
 				while (true)
 				{
 					var id = NewId();
 					var reply = SendAndReceive(id, method, prms, waitsForUser);
-					var result = ResultOrThrow(reply);
+					object? result;
+					try
+					{
+						result = ResultOrThrow(reply);
+					}
+					catch (RubyException e) when (oracleError != null)
+					{
+						throw new RubyException(e.Code, $"{e.Message} (oracle: {oracleError.Message})");
+					}
 
 					if (result is not IDictionary<string, object?> map
 						|| !map.TryGetValue("http_request", out var httpObj)
 						|| httpObj is not IDictionary<string, object?> http)
 						return result;
 
-					// The blind oracle step of the PIN: pass the request to the oracle, its answer back to Ruby
-					if (PinOracle == null)
-						throw new RubyException(RubyException.ProtocolError, "Ruby asks for its PIN oracle and none is set");
-					if (!http.TryGetValue("params", out var hp) || hp is not IDictionary<string, object?> httpParams
-						|| !http.TryGetValue("on-reply", out var onReply) || onReply is not string next)
+					// The blind oracle step of the PIN: pass the request to the oracle, its answer back to Ruby.
+					// Ruby is now waiting for that answer: on any failure send it an empty reply (Ruby rejects it,
+					// or offers the user to retry) instead of leaving it waiting.
+					if (!http.TryGetValue("on-reply", out var onReply) || onReply is not string next)
 						throw new RubyException(RubyException.ProtocolError, "Invalid http_request from Ruby");
-
-					var body = PinOracle(httpParams);
+					object? body = null;
+					try
+					{
+						if (PinOracle == null)
+							throw new RubyException(RubyException.ProtocolError, "Ruby asks for its PIN oracle and none is set");
+						if (!http.TryGetValue("params", out var hp) || hp is not IDictionary<string, object?> httpParams)
+							throw new RubyException(RubyException.ProtocolError, "Invalid http_request from Ruby");
+						body = PinOracle(httpParams);
+						oracleError = null;
+					}
+					catch (Exception e)
+					{
+						oracleError = e;
+					}
 					method = next;
 					prms = body;
 					waitsForUser = true;
@@ -245,6 +265,30 @@ namespace DistricutedCryptographyLib
 				waitsForUser: true) is true;
 
 		public bool Logout() => Call("logout") is true;
+
+		/// <summary>
+		/// Pairs Ruby with its blind oracle (the RubyPinOracle of the wallet): the oracle public key and a URL (Ruby
+		/// only passes the URL back in its requests; it must start with http:// or https://). Ruby shows the details
+		/// and the user confirms. Ruby refuses to change the key once it has a PIN.
+		/// </summary>
+		public bool UpdatePinServer(string url, byte[] oraclePublicKey) =>
+			Call("update_pinserver", P(("urlA", url), ("pubkey", oraclePublicKey)), waitsForUser: true) is true;
+
+		/// <summary>Back to the default (Blockstream) oracle details.</summary>
+		public bool ResetPinServer() =>
+			Call("update_pinserver", P(("reset_details", true), ("reset_certificate", true)), waitsForUser: true) is true;
+
+		/// <summary>DEBUG firmware only: wipes the wallet and the PIN state.</summary>
+		public bool DebugCleanReset() => Call("debug_clean_reset") is true;
+
+		/// <summary>DEBUG firmware only: the PIN the CI firmware "types" (and a new one for a PIN change).</summary>
+		public bool DebugSetPin(int pin, int? newPin = null)
+		{
+			var prms = P(("pin", pin));
+			if (newPin != null)
+				prms["new_pin"] = newPin.Value;
+			return Call("debug_set_pin", prms) is true;
+		}
 
 		/// <summary>DEBUG firmware only: loads a mnemonic in RAM (no PIN). Used by the tests with the emulator.</summary>
 		public bool DebugSetMnemonic(string mnemonic, string? passphrase = null, bool temporaryWallet = false) =>

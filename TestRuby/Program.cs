@@ -38,6 +38,7 @@ void Throws<T>(string name, Action action) where T : Exception
 }
 
 OfflineTests();
+OracleOfflineTests();
 var device = args.Length > 0 ? args[0] : "offline";
 if (device != "offline")
 	DeviceTests(device);
@@ -142,7 +143,7 @@ void DeviceTests(string dev)
 
 	SignPsbtTest(ruby);
 
-	// Errors come back as RubyException with the firmware code
+	// Errors come back as RubyException with the firmware code (while unlocked: a locked unit answers HW_LOCKED)
 	try
 	{
 		ruby.Call("no_such_method");
@@ -152,6 +153,9 @@ void DeviceTests(string dev)
 	{
 		Check("unknown method error", e.Code == RubyException.UnknownMethod, $"{e.Code} {e.Message}");
 	}
+
+	// Last: it wipes the unit (three wrong PINs)
+	OracleDeviceTests(ruby);
 }
 
 void SignPsbtTest(RubyClient ruby)
@@ -203,3 +207,7 @@ void SignPsbtTest(RubyClient ruby)
 		Check("other wallet's psbt not signed", true, $"rejected: {e.Message}");
 	}
 }
+
+void OracleOfflineTests() => OracleTests.Offline(Check);
+
+void OracleDeviceTests(RubyClient ruby) => OracleTests.Device(ruby, TestMnemonic, Check);
