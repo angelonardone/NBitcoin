@@ -41,7 +41,10 @@ OfflineTests();
 OracleOfflineTests();
 var device = args.Length > 0 ? args[0] : "offline";
 if (device != "offline")
+{
 	DeviceTests(device);
+	KbFlowTests.Run(device, TestMnemonic, Check); // after DeviceTests closed its connection
+}
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");
 return failures == 0 ? 0 : 1;
