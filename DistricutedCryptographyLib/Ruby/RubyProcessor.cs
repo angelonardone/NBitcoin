@@ -46,8 +46,9 @@ namespace DistricutedCryptographyLib
 			{
 				return action(client);
 			}
+			// a SocketException is not an IOException: without it a dead emulator connection was kept (2026-11-08)
 			catch (Exception e) when (e is IOException or TimeoutException or ObjectDisposedException
-				or UnauthorizedAccessException)
+				or UnauthorizedAccessException or System.Net.Sockets.SocketException)
 			{
 				Disconnect(device);
 				throw;
@@ -321,7 +322,7 @@ namespace DistricutedCryptographyLib
 		}
 
 		/// <summary>
-		/// The utility keys of the wallet (Ruby asks the user to confirm): {"success", "login", "chat", "groups",
+		/// The utility keys of the wallet (handed without asking, after the PIN): {"success", "login", "chat", "groups",
 		/// "jsonFiles", "fileEncryption", "hsm"} as extended private keys (xprv / tprv) of 1000'/0', 2000'/0',
 		/// 3000'/0', 4000'/0', 5000'/0' and 6000' of the BIP86 account: the same keys a software wallet derives.
 		/// </summary>

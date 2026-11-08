@@ -320,8 +320,8 @@ namespace DistricutedCryptographyLib
 			ExtPubKey.Parse(GetXpub(network, RubyUtilityKeys.AccountPath(network)), network);
 
 		/// <summary>
-		/// The wallet utility keys (login, chat, groups, JSON files, file encryption, HSM). Ruby asks the user to
-		/// confirm on its screen and returns them ECDH-encrypted to a one-time key made here.
+		/// The wallet utility keys (login, chat, groups, JSON files, file encryption, HSM). Ruby hands them without
+		/// asking (its PIN already unlocked it for this host), ECDH-encrypted to a one-time key made here.
 		/// </summary>
 		public RubyUtilityKeys GetUtilityKeys(Network network)
 		{
