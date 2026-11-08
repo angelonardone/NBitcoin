@@ -70,11 +70,11 @@ namespace DistricutedCryptographyLib
 		public string FindDevices()
 		{
 			var found = new List<object>();
-			foreach (var port in RubySerialTransport.ListPorts())
+			foreach (var port in RubySerial.ListPorts())
 			{
 				try
 				{
-					using var client = new RubyClient(new RubySerialTransport(port)) { TimeoutMs = 2000 };
+					using var client = new RubyClient(RubySerial.Open(port)) { TimeoutMs = 2000 };
 					var info = client.GetVersionInfo();
 					if (info.TryGetValue("JADE_VERSION", out var version))
 						found.Add(new { device = port, version = Convert.ToString(version), state = Convert.ToString(V(info, "JADE_STATE")) });

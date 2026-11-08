@@ -64,15 +64,10 @@ namespace DistricutedCryptographyLib
 		}
 	}
 
-	/// <summary>USB serial transport of a real Ruby board (115200 8N1).</summary>
+	/// <summary>USB serial transport of a real Ruby board on Windows (115200 8N1); Linux and macOS: RubyUnixSerialTransport.</summary>
 	public sealed class RubySerialTransport : IRubyTransport
 	{
-		// USB-serial bridges of the ESP32 boards that run Jade / Ruby (same list as jadepy):
-		// CP210x, CH9102, FTDI, CH340, ESP32-S3 native USB (JTAG / CDC).
-		public static readonly (int Vid, int Pid)[] KnownUsbIds =
-		{
-			(0x10c4, 0xea60), (0x1a86, 0x55d4), (0x0403, 0x6001), (0x1a86, 0x7523), (0x303a, 0x4001), (0x303a, 0x1001)
-		};
+		public static (int Vid, int Pid)[] KnownUsbIds => RubySerial.KnownUsbIds;
 
 		private readonly SerialPort _port;
 

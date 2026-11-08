@@ -76,7 +76,7 @@ namespace DistricutedCryptographyLib
 			new RubyClient(new RubyTcpTransport(host, port));
 
 		public static RubyClient ConnectSerial(string portName) =>
-			new RubyClient(new RubySerialTransport(portName));
+			new RubyClient(RubySerial.Open(portName));
 
 		/// <summary>"tcp:host:port" (emulator) or a serial port name ("COM5", "/dev/ttyUSB0").</summary>
 		public static RubyClient Connect(string device)
