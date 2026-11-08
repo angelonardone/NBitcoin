@@ -7,7 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Ruby hardware key over USB serial; same version as System.IO.Ports.dll in the KB (@GxJadeLib) -->
+    <!-- Ruby hardware key over USB serial on Windows; same version as System.IO.Ports.dll in the KB (File DistributedCryptographyLib.SystemIOPorts, the Windows build; Linux and macOS use RubyUnixSerialTransport) -->
     <PackageReference Include="System.IO.Ports" Version="8.0.0" />
   </ItemGroup>
 
