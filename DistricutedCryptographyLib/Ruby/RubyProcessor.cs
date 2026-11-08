@@ -18,9 +18,6 @@ namespace DistricutedCryptographyLib
 	/// </summary>
 	public class RubyProcessor
 	{
-		// Ruby only passes the oracle URL back in its requests (the oracle runs in this process); it must be http(s).
-		public const string OracleUrl = "http://oracle.distributedcryptography.local";
-
 		private static readonly Dictionary<string, RubyClient> Clients = new(StringComparer.OrdinalIgnoreCase);
 		private static readonly object ClientsLock = new();
 
@@ -185,13 +182,16 @@ namespace DistricutedCryptographyLib
 			});
 		}
 
-		/// <summary>Pairs Ruby with the oracle of the wallet (before Ruby has a PIN). The user confirms on Ruby.</summary>
+		/// <summary>
+		/// Pairs Ruby with the oracle of the wallet (before Ruby has a PIN). The wallet oracle is the default of Ruby:
+		/// nothing is asked on the device.
+		/// </summary>
 		public string Pair(string device, string oracleKey, string encryptedOracle)
 		{
 			try
 			{
 				var oracle = DecryptOracle(oracleKey, encryptedOracle);
-				return WithClient(device, c => Ok(new { success = c.UpdatePinServer(OracleUrl, oracle.PublicKey), error = "" }));
+				return WithClient(device, c => Ok(new { success = c.PairWalletOracle(oracle.PublicKey), error = "" }));
 			}
 			catch (Exception e)
 			{

@@ -13,8 +13,8 @@ namespace DistricutedCryptographyLib
 	/// v2. Ruby keeps its seed encrypted with a key that needs the PIN AND a secret held here; this oracle never sees
 	/// the PIN nor the seed, and forgets its secret after 3 wrong PINs.
 	///
-	/// - Pairing: RubyClient.UpdatePinServer(url, PublicKey) before Ruby has a PIN (Ruby refuses to change the
-	///   oracle key of an initialized unit).
+	/// - Pairing: RubyClient.PairWalletOracle(PublicKey) before Ruby has a PIN (Ruby refuses to change the oracle
+	///   key of an initialized unit). The wallet oracle is the default of Ruby: nothing is asked on the device.
 	/// - Use: client.PinOracle = oracle.HandleRequest; then every auth_user that needs the PIN is answered here.
 	/// - State: ExportState() (JSON: the oracle private key + one record per device). It changes on EVERY answer
 	///   (attempt counter, anti-replay counter), so the wallet must save it again after each unlock, encrypted with

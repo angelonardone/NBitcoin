@@ -267,14 +267,24 @@ namespace DistricutedCryptographyLib
 		public bool Logout() => Call("logout") is true;
 
 		/// <summary>
-		/// Pairs Ruby with its blind oracle (the RubyPinOracle of the wallet): the oracle public key and a URL (Ruby
-		/// only passes the URL back in its requests; it must start with http:// or https://). Ruby shows the details
-		/// and the user confirms. Ruby refuses to change the key once it has a PIN.
+		/// Pairs Ruby with its blind oracle, the RubyPinOracle of the wallet (the default oracle of Ruby): only the
+		/// oracle public key, no URL. Ruby asks nothing and refuses to change the key once it has a PIN. Ruby then sends
+		/// its oracle requests to "ruby:wallet-oracle/set_pin" or ".../get_pin" (WalletOracleUrl).
+		/// </summary>
+		public bool PairWalletOracle(byte[] oraclePublicKey) =>
+			Call("update_pinserver", P(("pubkey", oraclePublicKey))) is true;
+
+		/// <summary>The "url" Ruby gives the oracle of the wallet (a marker: there is no server).</summary>
+		public const string WalletOracleUrl = "ruby:wallet-oracle";
+
+		/// <summary>
+		/// A remote oracle (a URL and its key). Ruby accepts it only after the user chose "Use Remote Oracle" on Ruby
+		/// (Options > Blind Oracle), before the wallet is created, and shows the details to confirm.
 		/// </summary>
 		public bool UpdatePinServer(string url, byte[] oraclePublicKey) =>
 			Call("update_pinserver", P(("urlA", url), ("pubkey", oraclePublicKey)), waitsForUser: true) is true;
 
-		/// <summary>Back to the default (Blockstream) oracle details.</summary>
+		/// <summary>Forgets the oracle: Ruby goes back to its default, the oracle of the wallet that pairs it next.</summary>
 		public bool ResetPinServer() =>
 			Call("update_pinserver", P(("reset_details", true), ("reset_certificate", true)), waitsForUser: true) is true;
 

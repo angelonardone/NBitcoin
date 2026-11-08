@@ -104,18 +104,34 @@ internal static class OracleTests
 	{
 		Console.WriteLine("== oracle (device)");
 		const int Pin = 234567;
-		const string OracleUrl = "http://ruby-oracle.local";
 		string State() => ruby.GetVersionInfo()["JADE_STATE"] as string ?? "";
 
 		var oracle = RubyPinOracle.Create();
 		check("debug_clean_reset", ruby.DebugCleanReset(), "");
 		ruby.DebugSetPin(Pin);
-		check("pairing (update_pinserver with the oracle key)", ruby.UpdatePinServer(OracleUrl, oracle.PublicKey), "");
+		// A remote oracle (a URL) is refused unless the user chose it on Ruby (Options > Blind Oracle)
+		try
+		{
+			ruby.UpdatePinServer("http://remote-oracle.example", RubyPinOracle.Create().PublicKey);
+			check("remote oracle refused unless chosen on Ruby", false, "");
+		}
+		catch (RubyException e)
+		{
+			check("remote oracle refused unless chosen on Ruby", e.Message.Contains("Remote Oracle"), e.Message);
+		}
+		check("pairing with the wallet oracle (update_pinserver with only the key)", ruby.PairWalletOracle(oracle.PublicKey), "");
+		check("pairing again with the same key is accepted", ruby.PairWalletOracle(oracle.PublicKey), "");
 		ruby.DebugSetMnemonic(mnemonic);
-		ruby.PinOracle = oracle.HandleRequest;
+		string? oracleUrl = null;
+		ruby.PinOracle = p =>
+		{
+			oracleUrl = p.TryGetValue("urls", out var u) && u is System.Collections.Generic.List<object?> l && l.Count == 1 ? l[0] as string : "?";
+			return oracle.HandleRequest(p);
+		};
 		check("first auth_user sets the PIN through the oracle",
 			ruby.AuthUser(Network.TestNet) && oracle.LastResult == "set_pin" && oracle.RecordCount == 1, oracle.LastResult);
 		check("state READY", State() == "READY", State());
+		check("Ruby asks the wallet oracle (one url, no server)", oracleUrl == RubyClient.WalletOracleUrl + "/set_pin", oracleUrl ?? "");
 
 		ruby.Logout();
 		check("logout locks", State() == "LOCKED", State());
@@ -135,7 +151,7 @@ internal static class OracleTests
 		// The key of the oracle can not be changed on a unit with a PIN
 		try
 		{
-			ruby.UpdatePinServer(OracleUrl, RubyPinOracle.Create().PublicKey);
+			ruby.PairWalletOracle(RubyPinOracle.Create().PublicKey);
 			check("oracle key locked once there is a PIN", false, "");
 		}
 		catch (RubyException e)
