@@ -50,10 +50,11 @@ namespace DistricutedCryptographyLib
 		public int TimeoutMs { get; set; } = 30_000;
 
 		/// <summary>
-		/// Timeout of the calls that wait for the user on the device (PIN, confirmations). 30 minutes: setting up a new
-		/// Ruby (write down 12 or 24 words, verify them, choose and confirm the PIN) easily takes more than 5 minutes.
+		/// Timeout of the calls that wait for the user on the device (PIN, confirmations). 2 hours: setting up a Ruby
+		/// is one call, and restoring a wallet means typing 12 or 24 words with three buttons, then the PIN twice - on
+		/// 2026-11-08 restoring 12 words did not fit in 30 minutes.
 		/// </summary>
-		public int UserTimeoutMs { get; set; } = 30 * 60_000;
+		public int UserTimeoutMs { get; set; } = 120 * 60_000;
 
 		/// <summary>The device log lines ({ "log": ... } messages of the debug firmware).</summary>
 		public Action<string>? Log { get; set; }
