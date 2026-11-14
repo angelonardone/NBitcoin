@@ -68,6 +68,14 @@ namespace DistricutedCryptographyLib
 			return LegacyMultiSig.SignSpend(_group, bundleJson, receivingExtPrivKey, changeExtPrivKey, finalPercent, networkType);
 		}
 
+		// Same as SignLegacySpend for a member whose keys live on Ruby: the library gets only his two chain-level
+		// extended public keys and Ruby signs each fee level after the user checks it on its screen.
+		public string SignLegacySpendWithRuby(string bundleJson, string device, string receivingExtPubKey,
+			string changeExtPubKey, int finalPercent, string networkType)
+		{
+			return LegacyMultiSig.SignSpendWithRuby(_group, bundleJson, device, receivingExtPubKey, changeExtPubKey, finalPercent, networkType);
+		}
+
 		// Finalize one level of a bundle that already has the required signatures.
 		public string FinalizeLegacySpend(string bundleJson, int percent, string networkType)
 		{
@@ -104,6 +112,7 @@ namespace DistricutedCryptographyLib
 				NumOfSharesReached = source.NumOfSharesReached,
 				ExtPubKeyMultiSigReceiving = source.ExtPubKeyMultiSigReceiving,
 				ExtPubKeyMultiSigChange = source.ExtPubKeyMultiSigChange,
+				ExtPubKeyMultiSigAccount = source.ExtPubKeyMultiSigAccount,
 				SubGroupType = source.SubGroupType,
 				BountyGroupId = source.BountyGroupId,
 				DataGroupId = source.DataGroupId,
@@ -146,6 +155,7 @@ namespace DistricutedCryptographyLib
 				Signature = source.Signature,
 				ExtPubKeyMultiSigReceiving = source.ExtPubKeyMultiSigReceiving,
 				ExtPubKeyMultiSigChange = source.ExtPubKeyMultiSigChange,
+				ExtPubKeyMultiSigAccount = source.ExtPubKeyMultiSigAccount,
 				ExtPubKeyTimeBountyReceiving = source.ExtPubKeyTimeBountyReceiving
 			};
 		}
@@ -184,6 +194,7 @@ namespace DistricutedCryptographyLib
 				NumOfSharesReached = source.NumOfSharesReached,
 				ExtPubKeyMultiSigReceiving = source.ExtPubKeyMultiSigReceiving,
 				ExtPubKeyMultiSigChange = source.ExtPubKeyMultiSigChange,
+				ExtPubKeyMultiSigAccount = source.ExtPubKeyMultiSigAccount,
 				ExtPubKeyTimeBountyReceiving = source.ExtPubKeyTimeBountyReceiving
 			};
 

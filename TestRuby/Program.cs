@@ -3,6 +3,7 @@
 //   dotnet run -- offline                 CBOR, ECDH-AES and the software utility keys (no device)
 //   dotnet run -- tcp:127.0.0.1:30131     + the emulator (DEBUG + CI firmware: auto-confirms the screens)
 //   dotnet run -- COM5                    + a real Ruby with a DEBUG firmware (confirm on the device)
+//   dotnet run -- groups tcp:127.0.0.1:30131   group payments with a Ruby member (needs the local RegTest node)
 //
 // The device tests load a test mnemonic with debug_set_mnemonic: never run them on a Ruby holding real funds.
 
@@ -35,6 +36,14 @@ void Throws<T>(string name, Action action) where T : Exception
 	{
 		Check(name, false, $"{e.GetType().Name}: {e.Message}");
 	}
+}
+
+if (args.Length > 1 && args[0] == "groups")
+{
+	// group payments with a Ruby member, against the CI emulator and the local RegTest node
+	GroupTests.Run(args[1], TestMnemonic, args.Length > 2 ? args[2] : "http://dc:dcregtest@127.0.0.1:18443", Check);
+	Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");
+	return failures == 0 ? 0 : 1;
 }
 
 OfflineTests();

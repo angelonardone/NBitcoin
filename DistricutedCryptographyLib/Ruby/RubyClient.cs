@@ -343,12 +343,22 @@ namespace DistricutedCryptographyLib
 		/// Ruby signs the inputs of the PSBT that belong to its wallet (by master fingerprint and key path) after the
 		/// user confirms the outputs and the fee on the device. Returns the PSBT with the signatures added.
 		/// </summary>
-		public byte[] SignPsbt(Network network, byte[] psbt)
+		public byte[] SignPsbt(Network network, byte[] psbt) => SignPsbt(network, psbt, null);
+
+		/// <summary>
+		/// <paramref name="feeOptions"/> (Ruby firmware, 2026-11-13): the same payment at other fees (at most 3). Ruby
+		/// shows the payment once with every fee and the user confirms once; the other PSBTs are then signed by
+		/// <see cref="SignPsbt(Network, byte[])"/> without asking again (single use, 10 minutes).
+		/// </summary>
+		public byte[] SignPsbt(Network network, byte[] psbt, IList<byte[]>? feeOptions)
 		{
 			lock (_sync)
 			{
 				var id = NewId();
-				var reply = SendAndReceive(id, "sign_psbt", P(("network", ToRubyNetwork(network)), ("psbt", psbt)), true);
+				var parameters = feeOptions != null && feeOptions.Count > 0
+					? P(("network", ToRubyNetwork(network)), ("psbt", psbt), ("fee_options", feeOptions.Cast<object>().ToList()))
+					: P(("network", ToRubyNetwork(network)), ("psbt", psbt));
+				var reply = SendAndReceive(id, "sign_psbt", parameters, true);
 				using var output = new MemoryStream();
 				while (true)
 				{
@@ -371,6 +381,50 @@ namespace DistricutedCryptographyLib
 		{
 			var network = psbt.Network;
 			return PSBT.Load(SignPsbt(network, psbt.ToBytes()), network);
+		}
+
+		/// <summary>
+		/// The same payment at several fees, confirmed once on Ruby: the first PSBT carries the others as fee options,
+		/// then each other one is signed without a screen. Returns the signed PSBTs in the same order.
+		/// </summary>
+		public IList<PSBT> SignPsbtFeeOptions(IList<PSBT> psbts)
+		{
+			if (psbts == null || psbts.Count == 0)
+				throw new ArgumentException("No PSBT to sign");
+			var network = psbts[0].Network;
+			lock (_sync)
+			{
+				var others = psbts.Skip(1).Select(p => p.ToBytes()).ToList();
+				var signed = new List<PSBT> { PSBT.Load(SignPsbt(network, psbts[0].ToBytes(), others), network) };
+				foreach (var p in psbts.Skip(1))
+					signed.Add(PSBT.Load(SignPsbt(network, p.ToBytes()), network));
+				return signed;
+			}
+		}
+
+		/// <summary>The multisig wallets registered on Ruby: name -> {variant, sorted, threshold, num_signers}.</summary>
+		public IDictionary<string, object?> GetRegisteredMultisigs() =>
+			Call("get_registered_multisigs") as IDictionary<string, object?>
+			?? throw new RubyException(RubyException.ProtocolError, "Invalid get_registered_multisigs reply");
+
+		/// <summary>
+		/// Registers a multisig wallet on Ruby (the user confirms it on the device; an identical registration answers at
+		/// once). signers: (master fingerprint, derivation of the xpub, xpub). After it, Ruby recognises the change of a
+		/// payment of that wallet as its own.
+		/// </summary>
+		public void RegisterMultisig(Network network, string name, string variant, bool sorted, int threshold,
+			IList<(HDFingerprint fingerprint, KeyPath derivation, string xpub)> signers)
+		{
+			var list = signers.Select(s => (object?)P(
+				("fingerprint", s.fingerprint.ToBytes()),
+				("derivation", s.derivation.Indexes.Select(i => (object?)(long)i).ToList()),
+				("xpub", s.xpub),
+				("path", new List<object?>()))).ToList();
+			var reply = Call("register_multisig", P(("network", ToRubyNetwork(network)), ("multisig_name", name),
+				("descriptor", P(("variant", variant), ("sorted", sorted), ("threshold", threshold), ("signers", list)))),
+				waitsForUser: true);
+			if (reply is not bool ok || !ok)
+				throw new RubyException(RubyException.ProtocolError, "Ruby did not register the multisig");
 		}
 	}
 }

@@ -20,6 +20,8 @@ namespace DistricutedCryptographyLib
 		public bool NumOfSharesReached { get; set; }
 		public string? ExtPubKeyMultiSigReceiving { get; set; }
 		public string? ExtPubKeyMultiSigChange { get; set; }
+		// Legacy multisig: the BIP48 account key with its origin, [fingerprint/48'/coin'/0'/1']xpub (2026-11-13)
+		public string? ExtPubKeyMultiSigAccount { get; set; }
 		public short SubGroupType { get; set; }
 		public Guid BountyGroupId { get; set; }
 		public Guid DataGroupId { get; set; }
@@ -58,6 +60,8 @@ namespace DistricutedCryptographyLib
 		public bool NumOfSharesReached { get; set; }
 		public string? ExtPubKeyMultiSigReceiving { get; set; }
 		public string? ExtPubKeyMultiSigChange { get; set; }
+		// Legacy multisig: the BIP48 account key with its origin, [fingerprint/48'/coin'/0'/1']xpub (2026-11-13)
+		public string? ExtPubKeyMultiSigAccount { get; set; }
 		public string? ExtPubKeyTimeBountyReceiving { get; set; }
 		public List<MuSigSignaturesItem> MuSigSignatures { get; set; } = new List<MuSigSignaturesItem>();
 	}
@@ -76,6 +80,8 @@ namespace DistricutedCryptographyLib
 		public string? Signature { get; set; }
 		public string? ExtPubKeyMultiSigReceiving { get; set; }
 		public string? ExtPubKeyMultiSigChange { get; set; }
+		// Legacy multisig: the BIP48 account key with its origin, [fingerprint/48'/coin'/0'/1']xpub (2026-11-13)
+		public string? ExtPubKeyMultiSigAccount { get; set; }
 		public string? ExtPubKeyTimeBountyReceiving { get; set; }
 	}
 }

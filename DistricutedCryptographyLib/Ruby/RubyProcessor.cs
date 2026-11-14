@@ -30,7 +30,7 @@ namespace DistricutedCryptographyLib
 			: JsonSerializer.Serialize(new { success = false, error = message, encryptedOracle });
 
 		// The open client of a device; a broken connection is dropped and opened again on the next call.
-		private static T WithClient<T>(string device, Func<RubyClient, T> action)
+		internal static T WithClient<T>(string device, Func<RubyClient, T> action)
 		{
 			device = (device ?? "").Trim();
 			RubyClient client;

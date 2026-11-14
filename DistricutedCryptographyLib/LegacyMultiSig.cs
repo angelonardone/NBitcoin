@@ -218,6 +218,254 @@ namespace DistricutedCryptographyLib
 			catch (Exception e) { return Err(e); }
 		}
 
+		/// <summary>
+		/// Same as <see cref="SignSpend"/> for a member whose keys live on Ruby (docs/ruby-wallet.md): the library only
+		/// has the member's chain-level extended PUBLIC keys (the ones it gave the group) and Ruby signs each fee level
+		/// after the user checks it on its screen (one confirmation per level). Ruby's own m/48'/coin'/0'/1' must give
+		/// those two keys, so a Ruby holding another wallet is refused before anything is shown.
+		/// Declined on Ruby -> {"success": false, "error": "The payment was declined on Ruby"}.
+		/// </summary>
+		public static string SignSpendWithRuby(GroupSDT group, string bundleJson, string device,
+			string receivingExtPubKey, string changeExtPubKey, int finalPercent, string networkType)
+		{
+			try
+			{
+				var net = GetNetwork(networkType);
+				var sg = ToSegWitGroup(group, net, out _);
+				var bundle = FromJson(bundleJson, net);
+				var receiving = ExtPubKey.Parse((receivingExtPubKey ?? "").Trim(), net);
+				var change = ExtPubKey.Parse((changeExtPubKey ?? "").Trim(), net);
+				var coin = net.ChainName == ChainName.Mainnet ? "0'" : "1'";
+				var accountPath = KeyPath.Parse("m/48'/" + coin + "/0'/1'");
+				var accounts = MemberAccounts(group, sg, net);
+				var info = RubyProcessor.WithClient(device, c =>
+				{
+					var fingerprint = c.GetMasterFingerprint(net);
+					var account = ExtPubKey.Parse(c.GetXpub(net, accountPath), net);
+					if (account.Derive(0).GetPublicKey() != receiving.GetPublicKey() || account.Derive(1).GetPublicKey() != change.GetPublicKey())
+						throw new InvalidOperationException("This Ruby does not hold the keys of this group member");
+					// 2026-11-13: with the account key of every member the group is registered on Ruby (asked once on
+					// Ruby, then an identical registration answers at once) and every PSBT carries the keys of all the
+					// members: Ruby recognises the change as the group's own and does not show it, and the fee levels
+					// of a payment are confirmed on one screen.
+					var registered = false;
+					if (accounts != null)
+					{
+						var signers = accounts.Select(a => a.Xpub.GetPublicKey() == account.GetPublicKey()
+								? (fingerprint, accountPath, a.Xpub.ToString(net))
+								: (a.Fingerprint, a.Path, a.Xpub.ToString(net)))
+							.OrderBy(s => s.Item3, StringComparer.Ordinal).ToList();
+						c.RegisterMultisig(net, RegistrationName(group, sg), "sh(wsh(multi(k)))", true, group.MinimumShares, signers);
+						registered = true;
+					}
+					return SignExternal(sg, bundle, receiving, change, new RootedKeyPath(fingerprint, accountPath), finalPercent,
+						requests =>
+						{
+							if (registered)
+								foreach (var request in requests)
+									AddGroupKeyPaths(sg, bundle, request, accounts!, fingerprint, accountPath, account);
+							// one screen for every fee level: only when Ruby can recognise the change (the other levels
+							// differ only in it); otherwise each level is confirmed on its own
+							if (registered && requests.Count > 1 && requests[0].Outputs.Count == 2)
+								return c.SignPsbtFeeOptions(requests);
+							return requests.Select(r => c.SignPsbt(r)).ToList();
+						});
+				});
+				string txHex = "", txId = "";
+				decimal feeBtc = 0m;
+				int vsize = 0;
+				if (finalPercent >= 0)
+				{
+					var tx = SegWitMultiSigSpend.Finalize(sg, bundle, finalPercent);
+					txHex = tx.ToHex();
+					txId = tx.GetHash().ToString();
+					feeBtc = info.Fees[0].ToDecimal(MoneyUnit.BTC);
+					vsize = tx.GetVirtualSize();
+				}
+				return JsonSerializer.Serialize(new
+				{
+					success = true,
+					error = "",
+					bundle = ToJson(bundle),
+					signatures = info.Signatures,
+					required = info.Required,
+					complete = info.Complete,
+					txHex,
+					txId,
+					feeBtc,
+					vsize
+				});
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return Err("The payment was declined on Ruby");
+			}
+			catch (Exception e) { return Err(e); }
+		}
+
+		internal sealed class MemberAccount
+		{
+			public HDFingerprint Fingerprint { get; set; }
+			public KeyPath Path { get; set; } = new KeyPath();
+			public ExtPubKey Xpub { get; set; } = null!;
+		}
+
+		/// <summary>
+		/// The BIP48 account key of every member ("[fingerprint/48'/coin'/0'/1']xpub", ExtPubKeyMultiSigAccount), in the
+		/// order of the group, each checked against the two chain keys the member gave the group (account/0 and /1).
+		/// Null when a member has none (groups made before 2026-11-13): then nothing is registered on Ruby.
+		/// </summary>
+		internal static List<MemberAccount>? MemberAccounts(GroupSDT group, SegWitMultiSigGroup sg, Network net)
+		{
+			var origins = new List<string?>();
+			if (!string.IsNullOrWhiteSpace(group.ExtPubKeyMultiSigReceiving) || !string.IsNullOrWhiteSpace(group.ExtPubKeyMultiSigChange))
+				origins.Add(group.ExtPubKeyMultiSigAccount);
+			foreach (var c in group.Contact ?? new List<ContactItem>())
+				if (c != null && (!string.IsNullOrWhiteSpace(c.ExtPubKeyMultiSigReceiving) || !string.IsNullOrWhiteSpace(c.ExtPubKeyMultiSigChange)))
+					origins.Add(c.ExtPubKeyMultiSigAccount);
+			if (origins.Count != sg.MemberCount)
+				return null;
+			var accounts = new List<MemberAccount>();
+			for (int m = 0; m < origins.Count; m++)
+			{
+				var text = (origins[m] ?? "").Trim();
+				var close = text.IndexOf(']');
+				if (!text.StartsWith("[") || close < 0)
+					return null;
+				var origin = RootedKeyPath.Parse(text.Substring(1, close - 1));
+				var xpub = ExtPubKey.Parse(text.Substring(close + 1), net);
+				if (xpub.Derive(0).Derive(0).PubKey != sg.MemberPubKey(m, 0, false) || xpub.Derive(1).Derive(0).PubKey != sg.MemberPubKey(m, 0, true))
+					throw new InvalidOperationException("The account key of a member does not match the keys he gave the group");
+				accounts.Add(new MemberAccount { Fingerprint = origin.MasterFingerprint, Path = origin.KeyPath, Xpub = xpub });
+			}
+			return accounts;
+		}
+
+		/// <summary>The name of the group on Ruby (at most 15 printable characters): a part of its name + a hash of its keys.</summary>
+		internal static string RegistrationName(GroupSDT group, SegWitMultiSigGroup sg)
+		{
+			var keys = string.Join(",", Enumerable.Range(0, sg.MemberCount).Select(m => sg.MemberPubKey(m, 0, false).ToHex()).OrderBy(k => k, StringComparer.Ordinal))
+				+ "/" + sg.RequiredSignatures;
+			var hash = Encoders.Hex.EncodeData(NBitcoin.Crypto.Hashes.SHA256(System.Text.Encoding.UTF8.GetBytes(keys))).Substring(0, 6);
+			var prefix = new string((group.GroupName ?? "").Where(ch => ch > 32 && ch < 127).Take(8).ToArray());
+			return (prefix.Length > 0 ? prefix + "-" : "DC-") + hash;
+		}
+
+		/// <summary>
+		/// Every member's key, with its origin, on every input and on the change output (when there is one): what Ruby
+		/// needs to check the inputs and the change against the registered group.
+		/// </summary>
+		internal static void AddGroupKeyPaths(SegWitMultiSigGroup sg, SegWitMultiSigBundle bundle, PSBT request,
+			IList<MemberAccount> accounts, HDFingerprint rubyFingerprint, KeyPath rubyAccountPath, ExtPubKey rubyAccount)
+		{
+			RootedKeyPath Origin(MemberAccount a, uint chain, uint seq) => a.Xpub.GetPublicKey() == rubyAccount.GetPublicKey()
+				? new RootedKeyPath(rubyFingerprint, rubyAccountPath.Derive(chain).Derive(seq))
+				: new RootedKeyPath(a.Fingerprint, a.Path.Derive(chain).Derive(seq));
+			for (int i = 0; i < bundle.Inputs.Count; i++)
+			{
+				uint chain = bundle.Inputs[i].IsChange ? 1u : 0u, seq = (uint)bundle.Inputs[i].Sequence;
+				foreach (var a in accounts)
+					request.Inputs[i].AddKeyPath(a.Xpub.Derive(chain).Derive(seq).PubKey, Origin(a, chain, seq));
+			}
+			// the change: an output on the change chain of the group (the library always builds [payment, change])
+			var maxSeq = bundle.Inputs.Select(x => x.Sequence).DefaultIfEmpty(0).Max() + 1000;
+			foreach (var output in request.Outputs)
+			{
+				for (int seq = 0; seq <= maxSeq; seq++)
+				{
+					if (sg.GetMultiSig(seq, true).Address.ScriptPubKey != output.ScriptPubKey)
+						continue;
+					foreach (var a in accounts)
+						output.AddKeyPath(a.Xpub.Derive(1).Derive((uint)seq).PubKey, Origin(a, 1, (uint)seq));
+					break;
+				}
+			}
+		}
+
+		/// <summary>
+		/// One member signs on an external signer that holds the keys (Ruby): the same checks and the same result as
+		/// SegWitMultiSigSpend.Sign, but only the member's chain-level extended PUBLIC keys are here. Each PSBT gets,
+		/// on every input, the BIP32 path of the member's key (<paramref name="memberAccount"/> = master fingerprint +
+		/// m/48'/coin'/account'/1', then chain/sequence) and goes to <paramref name="signer"/>, which must return it
+		/// with the member's signature on every input and the same transaction. Every signature is verified here.
+		/// <paramref name="signer"/> gets the PSBT of every fee level that is signed (in the order of the bundle) and
+		/// returns them signed, in the same order.
+		/// </summary>
+		internal static SegWitMultiSigSpendInfo SignExternal(SegWitMultiSigGroup group, SegWitMultiSigBundle bundle,
+			ExtPubKey receivingXpub, ExtPubKey changeXpub, RootedKeyPath memberAccount, int finalPercent,
+			Func<IList<PSBT>, IList<PSBT>> signer)
+		{
+			if (memberAccount == null) throw new ArgumentNullException(nameof(memberAccount));
+			if (signer == null) throw new ArgumentNullException(nameof(signer));
+			var info = SegWitMultiSigSpend.Check(group, bundle);
+			var pubKeys = new List<PubKey>();
+			int member = -1;
+			for (int i = 0; i < bundle.Inputs.Count; i++)
+			{
+				var input = bundle.Inputs[i];
+				var chainXpub = input.IsChange ? changeXpub : receivingXpub;
+				if (chainXpub == null)
+					throw new ArgumentException($"The {(input.IsChange ? "change" : "receiving")} extended public key is missing");
+				var pub = chainXpub.Derive((uint)input.Sequence).PubKey;
+				var m = group.MemberOf(pub, input.Sequence, input.IsChange);
+				if (m < 0)
+					throw new ArgumentException("The signing key does not belong to a member of this group");
+				if (member >= 0 && m != member)
+					throw new ArgumentException("The receiving and change keys are of different members");
+				member = m;
+				pubKeys.Add(pub);
+			}
+			if (info.SignedBy.Contains(member))
+				throw new ArgumentException("You have already signed this payment");
+			if (info.Complete)
+				throw new ArgumentException("This payment already has all the signatures it needs");
+
+			if (finalPercent >= 0)
+			{
+				if (!info.NextIsLast)
+					throw new ArgumentException($"The fee is chosen by the last signer: this payment has {info.Signatures} of {info.Required} signatures");
+				var index = bundle.Levels.FindIndex(l => l.Percent == finalPercent);
+				if (index < 0)
+					throw new ArgumentException($"This payment has no +{finalPercent} % fee option");
+				bundle.Levels = new List<SegWitMultiSigFeeLevel> { bundle.Levels[index] };
+			}
+
+			var requests = new List<PSBT>();
+			foreach (var level in bundle.Levels)
+			{
+				var request = level.Psbt.Clone();
+				for (int i = 0; i < bundle.Inputs.Count; i++)
+				{
+					var path = memberAccount.Derive(new KeyPath((uint)(bundle.Inputs[i].IsChange ? 1 : 0), (uint)bundle.Inputs[i].Sequence));
+					request.Inputs[i].AddKeyPath(pubKeys[i], path);
+				}
+				requests.Add(request);
+			}
+			var signedAll = signer(requests) ?? throw new InvalidOperationException("The signer returned nothing");
+			if (signedAll.Count != bundle.Levels.Count)
+				throw new InvalidOperationException("The signer did not sign every fee level");
+			for (int l = 0; l < bundle.Levels.Count; l++)
+			{
+				var level = bundle.Levels[l];
+				var signedPsbt = signedAll[l];
+				if (signedPsbt.GetGlobalTransaction().GetHash() != level.Psbt.GetGlobalTransaction().GetHash())
+					throw new InvalidOperationException("The signer returned a different transaction");
+				for (int i = 0; i < bundle.Inputs.Count; i++)
+				{
+					if (!signedPsbt.Inputs[i].PartialSigs.TryGetValue(pubKeys[i], out var sig))
+						throw new InvalidOperationException($"The signer did not sign input {i}");
+					if (sig.SigHash != SigHash.All)
+						throw new InvalidOperationException($"The signer used another sighash on input {i}");
+					var hash = level.Psbt.Inputs[i].GetSignatureHash(SigHash.All, null);
+					if (!pubKeys[i].Verify(hash, sig.Signature))
+						throw new InvalidOperationException($"The signature of input {i} is not valid");
+					level.Psbt.Inputs[i].PartialSigs[pubKeys[i]] = sig;
+				}
+			}
+			// Check: only members signed, the same members on every level
+			return SegWitMultiSigSpend.Check(group, bundle);
+		}
+
 		/// <summary>Finalize one level of a bundle that already has the required signatures.</summary>
 		public static string FinalizeSpend(GroupSDT group, string bundleJson, int percent, string networkType)
 		{
