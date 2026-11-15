@@ -71,6 +71,14 @@ namespace DistricutedCryptographyLib
 			return DelegatedMultiSigSpend.SignSpend(_group, bundleJson, receivingExtPrivKey, changeExtPrivKey, finalPercent, networkType);
 		}
 
+		/// <summary>SignSpend for a member whose keys live on Ruby: Ruby shows the payment and signs the leaf scripts
+		/// (script path). The keys given are the member's chain-level extended public keys of the group.</summary>
+		public string SignSpendWithRuby(string bundleJson, string device, string receivingExtPubKey, string changeExtPubKey,
+			int finalPercent, string networkType)
+		{
+			return DelegatedMultiSigSpend.SignSpendWithRuby(_group, bundleJson, device, receivingExtPubKey, changeExtPubKey, finalPercent, networkType);
+		}
+
 		// Finalize one level of a bundle that already has the required signatures.
 		public string FinalizeSpend(string bundleJson, int percent, string networkType)
 		{

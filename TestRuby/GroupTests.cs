@@ -270,5 +270,161 @@ internal static class GroupTests
 			X(rubyTaproot.Derive(2)), X(rubyTaproot.Derive(3)), "RegTest"));
 		check("a Ruby with other words is refused (Delegated owner)", !wrong.GetProperty("success").GetBoolean() && wrong.GetProperty("error").GetString()!.Contains("does not hold"), wrong.GetProperty("error").GetString()!);
 		ruby.DebugSetMnemonic(mnemonic);
+
+		RunScriptPathMember(device, mnemonic, net, rpc, ruby, dest, check);
+	}
+
+	// 2026-11-15: a Ruby wallet signs as a MEMBER (script path, BIP342 multi_a leaves): in a Delegated group (owner
+	// software) and in a Multi Signature group (no owner; the Ruby wallet is the creator, one more signer). The Ruby
+	// member's chain keys are Ruby's m/86'/1'/0'/2 and /3; the other members are software wallets.
+	private static void RunScriptPathMember(string device, string mnemonic, Network net, RPCClient rpc, RubyClient ruby,
+		string dest, Action<string, bool, string> check)
+	{
+		Console.WriteLine("== Delegated / Multi Signature: a Ruby member signs the scripts");
+		string X(ExtPubKey k) => k.ToString(net);
+		var taproot = KeyPath.Parse("m/86'/1'/0'");
+		var rubyTaproot = ExtPubKey.Parse(ruby.GetXpub(net, taproot), net);
+		var owner = new ExtKey().Derive(taproot);
+		var m1 = new ExtKey().Derive(taproot);
+		var m2 = new ExtKey().Derive(taproot);
+		ContactItem Member(string name, ExtPubKey account) => new ContactItem
+		{
+			ContactUserName = name, ExtPubKeyMultiSigReceiving = X(account.Derive(2)), ExtPubKeyMultiSigChange = X(account.Derive(3))
+		};
+		// Delegated: software owner; members Ruby, M1, M2; 2 of the 3 members sign (3 scripts, Ruby is in 2)
+		var delegated = new GroupSDT
+		{
+			GroupId = Guid.NewGuid(), GroupType = 30, GroupName = "Delegated Ruby member", AmIGroupOwner = false, IsActive = true,
+			MinimumShares = 2,
+			ExtPubKeyMultiSigReceiving = X(owner.Derive(2).Neuter()), ExtPubKeyMultiSigChange = X(owner.Derive(3).Neuter()),
+			Contact = new List<ContactItem> { Member("Ruby", rubyTaproot), Member("M1", m1.Neuter()), Member("M2", m2.Neuter()) }
+		};
+		// Multi Signature: the Ruby wallet created it (its keys are the group's own), M1 and M2; 2 of the 3 sign
+		var multisig = new GroupSDT
+		{
+			GroupId = Guid.NewGuid(), GroupType = DelegatedMultiSigSpend.MultiSignatureGroupType, GroupName = "MultiSig Ruby",
+			AmIGroupOwner = true, IsActive = true, MinimumShares = 2,
+			ExtPubKeyMultiSigReceiving = X(rubyTaproot.Derive(2)), ExtPubKeyMultiSigChange = X(rubyTaproot.Derive(3)),
+			Contact = new List<ContactItem> { Member("M1", m1.Neuter()), Member("M2", m2.Neuter()) }
+		};
+
+		string RubyR() => X(rubyTaproot.Derive(2));
+		string RubyC() => X(rubyTaproot.Derive(3));
+		string M1R() => m1.Derive(2).ToString(net);
+		string M1C() => m1.Derive(3).ToString(net);
+
+		List<object> Fund(DelegatedProcessor p)
+		{
+			var utxos = new List<object>();
+			foreach (var (seq, isChange, btc) in new[] { (0, false, 0.6m), (1, true, 0.4m) })
+			{
+				var addr = J(p.CreateAddress(seq, isChange, "RegTest")).GetProperty("address").GetString()!;
+				var txid = rpc.SendToAddress(BitcoinAddress.Create(addr, net), Money.Coins(btc));
+				var vout = rpc.GetRawTransaction(txid).Outputs.FindIndex(o => o.ScriptPubKey == BitcoinAddress.Create(addr, net).ScriptPubKey);
+				utxos.Add(new { TxId = txid.ToString(), Vout = vout, AmountBtc = btc.ToString(System.Globalization.CultureInfo.InvariantCulture), Sequence = seq, IsChange = isChange, Address = addr });
+			}
+			rpc.Generate(1);
+			return utxos;
+		}
+		void Broadcast(string what, JsonElement r)
+		{
+			if (!r.GetProperty("success").GetBoolean() || r.GetProperty("txHex").GetString() is not { Length: > 0 } hex)
+			{
+				check(what, false, r.GetProperty("error").GetString()!);
+				return;
+			}
+			var txid = rpc.SendRawTransaction(Transaction.Parse(hex, net));
+			rpc.Generate(1);
+			check(what, rpc.GetRawTransactionInfo(txid).Confirmations >= 1, $"{txid} vsize {r.GetProperty("vsize").GetInt32()} fee {r.GetProperty("feeBtc").GetDecimal()}");
+		}
+
+		foreach (var (name, group) in new[] { ("Delegated", delegated), ("Multi Signature", multisig) })
+		{
+			var dp = new DelegatedProcessor();
+			check($"{name} FromSDT (Ruby member)", dp.FromSDT(group), "");
+
+			// Ruby signs first (every fee level), M1 signs last and picks +10 %
+			var utxos = Fund(dp);
+			var change = J(dp.CreateAddress(5, true, "RegTest")).GetProperty("address").GetString()!;
+			var built = J(dp.BuildSpend(JsonSerializer.Serialize(utxos), dest, "0.7", change, "0.0001", "10", false, "RegTest"));
+			check($"{name}: payment built", built.GetProperty("success").GetBoolean(), built.TryGetProperty("error", out var e0) ? e0.GetString()! : "");
+			var first = J(dp.SignSpendWithRuby(built.GetProperty("bundle").GetString()!, device, RubyR(), RubyC(), -1, "RegTest"));
+			check($"{name}: Ruby signs first (2 fee levels, script path)", first.GetProperty("success").GetBoolean() && first.GetProperty("signatures").GetInt32() == 1,
+				first.GetProperty("error").GetString()!);
+			if (first.GetProperty("success").GetBoolean())
+			{
+				var again = J(dp.SignSpendWithRuby(first.GetProperty("bundle").GetString()!, device, RubyR(), RubyC(), -1, "RegTest"));
+				check($"{name}: Ruby can not sign twice", !again.GetProperty("success").GetBoolean(), again.GetProperty("error").GetString()!);
+				Broadcast($"{name}: M1 signs last (+10 %): accepted by the node and mined",
+					J(dp.SignSpend(first.GetProperty("bundle").GetString()!, M1R(), M1C(), 10, "RegTest")));
+			}
+
+			// M1 signs first, Ruby signs last and picks the calculated fee
+			utxos = Fund(dp);
+			built = J(dp.BuildSpend(JsonSerializer.Serialize(utxos), dest, "0.7", change, "0.0001", "20", false, "RegTest"));
+			var m1First = J(dp.SignSpend(built.GetProperty("bundle").GetString()!, M1R(), M1C(), -1, "RegTest"));
+			check($"{name}: M1 signs first", m1First.GetProperty("success").GetBoolean(), m1First.GetProperty("error").GetString()!);
+			Broadcast($"{name}: Ruby signs last (script path): accepted by the node and mined",
+				J(dp.SignSpendWithRuby(m1First.GetProperty("bundle").GetString()!, device, RubyR(), RubyC(), 0, "RegTest")));
+		}
+
+		// the firmware itself (main/utils/psbt.c): a leaf is signed only if it holds Ruby's key AND the coin commits to it
+		{
+			var dp = new DelegatedProcessor();
+			dp.FromSDT(delegated);
+			var utxos = Fund(dp);
+			var u0 = JsonDocument.Parse(JsonSerializer.Serialize(utxos[0])).RootElement;
+			var ms = DelegatedMultiSig.FromExtPubKeys(owner.Derive(2).Neuter(),
+				new[] { rubyTaproot.Derive(2), m1.Derive(2).Neuter(), m2.Derive(2).Neuter() }, 2, 0, net);
+			var rubyKey = rubyTaproot.Derive(2).Derive(0).PubKey;
+			var rubyIndex = ms.SignerPubKeys.ToList().FindIndex(k => k == rubyKey);
+			var fp = ruby.GetMasterFingerprint(net);
+			PSBT Request(TapScript script, ControlBlock control)
+			{
+				var tx = net.CreateTransaction();
+				tx.Inputs.Add(new OutPoint(uint256.Parse(u0.GetProperty("TxId").GetString()!), u0.GetProperty("Vout").GetInt32()));
+				tx.Outputs.Add(Money.Coins(0.5m), BitcoinAddress.Create(dest, net));
+				var psbt = PSBT.FromTransaction(tx, net);
+				psbt.Inputs[0].WitnessUtxo = new TxOut(Money.Coins(0.6m), ms.Address.ScriptPubKey);
+				psbt.Inputs[0].Unknown[new byte[] { 0x15 }.Concat(control.ToBytes()).ToArray()] = script.Script.ToBytes().Concat(new byte[] { 0xc0 }).ToArray();
+				psbt.Inputs[0].HDTaprootKeyPaths[new TaprootPubKey(rubyKey.TaprootInternalKey.ToBytes())] =
+					new TaprootKeyPath(new RootedKeyPath(fp, taproot.Derive(2).Derive(0)), new[] { script.LeafHash });
+				return psbt;
+			}
+			bool Signed(PSBT p) => p.Inputs[0].Unknown.Keys.Any(k => k.Length == 65 && k[0] == 0x14);
+			check("Delegated: the address of the test = the group's", ms.Address.ToString() == u0.GetProperty("Address").GetString(), "");
+			var rubyScripts = Enumerable.Range(0, ms.Scripts.Count).Where(s => ms.GetScriptSignerIndices(s).Contains(rubyIndex)).ToList();
+			var mine = rubyScripts[0];
+			var notMine = Enumerable.Range(0, ms.Scripts.Count).First(s => !rubyScripts.Contains(s));
+			check("firmware: a leaf with Ruby's key, committed in the coin, is signed",
+				Signed(ruby.SignPsbt(Request(ms.Scripts[mine], ms.TaprootSpendInfo.GetControlBlock(ms.Scripts[mine])))), "");
+			check("firmware: a leaf without Ruby's key is not signed",
+				!Signed(ruby.SignPsbt(Request(ms.Scripts[notMine], ms.TaprootSpendInfo.GetControlBlock(ms.Scripts[notMine])))), "");
+			// the control block of another leaf: its merkle path does not lead from this leaf to the coin's key
+			check("firmware: a leaf the coin does not commit to is not signed",
+				!Signed(ruby.SignPsbt(Request(ms.Scripts[mine], ms.TaprootSpendInfo.GetControlBlock(ms.Scripts[notMine])))), "");
+			// a leaf of another group with Ruby's key (Ruby + an attacker's key, 1 of 2): not in this coin
+			var attacker = new ExtKey().Derive(taproot);
+			var foreign = DelegatedMultiSig.FromExtPubKeys(attacker.Derive(2).Neuter(), new[] { rubyTaproot.Derive(2), attacker.Derive(3).Neuter() }, 1, 0, net);
+			var foreignLeaf = foreign.Scripts.First(s => s.Script.ToBytes().AsSpan().IndexOf(rubyKey.TaprootInternalKey.ToBytes()) >= 0);
+			check("firmware: a leaf of another address is not signed",
+				!Signed(ruby.SignPsbt(Request(foreignLeaf, foreign.TaprootSpendInfo.GetControlBlock(foreignLeaf)))), "");
+		}
+
+		// keys of another wallet as the Ruby member's, and a Ruby with other words: refused before anything is shown
+		{
+			var dp = new DelegatedProcessor();
+			dp.FromSDT(delegated);
+			var utxos = Fund(dp);
+			var change = J(dp.CreateAddress(6, true, "RegTest")).GetProperty("address").GetString()!;
+			var bundle = J(dp.BuildSpend(JsonSerializer.Serialize(utxos), dest, "0.1", change, "0.0001", "", false, "RegTest")).GetProperty("bundle").GetString()!;
+			var other = new ExtKey().Derive(taproot);
+			var bad = J(dp.SignSpendWithRuby(bundle, device, X(other.Derive(2).Neuter()), X(other.Derive(3).Neuter()), -1, "RegTest"));
+			check("member keys of another wallet are refused", !bad.GetProperty("success").GetBoolean(), bad.GetProperty("error").GetString()!);
+			ruby.DebugSetMnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
+			var wrong = J(dp.SignSpendWithRuby(bundle, device, RubyR(), RubyC(), -1, "RegTest"));
+			check("a Ruby with other words is refused (member)", !wrong.GetProperty("success").GetBoolean() && wrong.GetProperty("error").GetString()!.Contains("does not hold"), wrong.GetProperty("error").GetString()!);
+			ruby.DebugSetMnemonic(mnemonic);
+		}
 	}
 }

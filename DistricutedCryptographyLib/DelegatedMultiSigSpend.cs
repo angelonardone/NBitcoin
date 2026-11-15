@@ -578,6 +578,206 @@ namespace DistricutedCryptographyLib
 			catch (Exception e) { return Err(e); }
 		}
 
+		// Ruby keeps at most this many leaf hashes per key and input (libwally's limit)
+		private const int RubyMaxLeavesPerInput = 128;
+
+		// PSBT input fields (BIP371) NBitcoin keeps among the unknown ones
+		private const byte PsbtInTapScriptSig = 0x14;
+		private const byte PsbtInTapLeafScript = 0x15;
+
+		/// <summary>
+		/// Same as <see cref="SignSpend"/> for a member whose keys live on Ruby (a member of a Delegated group, or any
+		/// participant of a Multi Signature group): the library only has the member's chain-level extended PUBLIC keys
+		/// (the ones he gave the group: Ruby's m/86'/coin'/0'/2 and /3, checked on Ruby before anything is shown).
+		/// Each fee level goes to Ruby as a PSBT with the member's key, its origin and the leaf scripts (multi_a) he is
+		/// in, each with its control block (BIP371). Ruby checks that every leaf holds its key and is committed in the
+		/// coin spent, shows the payment and signs every leaf (script path). Each signature is checked against its
+		/// tapscript sighash before it goes into the bundle, exactly where <see cref="SignSpend"/> puts its own.
+		/// Declined on Ruby -> {"success": false, "error": "The payment was declined on Ruby"}.
+		/// </summary>
+		public static string SignSpendWithRuby(GroupSDT group, string bundleJson, string device,
+			string receivingExtPubKey, string changeExtPubKey, int finalPercent, string networkType)
+		{
+			try
+			{
+				var net = GetNetwork(networkType);
+				var spend = LoadSpend(group, bundleJson, net);
+				var k = spend.MultiSigs[0].RequiredSignatures;
+				var receiving = ExtPubKey.Parse((receivingExtPubKey ?? "").Trim(), net);
+				var change = ExtPubKey.Parse((changeExtPubKey ?? "").Trim(), net);
+
+				// the member's key and its place for each input
+				var pubKeys = new List<PubKey>();
+				var signerIndices = new List<int>();
+				for (int i = 0; i < spend.MultiSigs.Count; i++)
+				{
+					var input = spend.Bundle.Inputs[i];
+					var pubKey = (input.IsChange ? change : receiving).Derive((uint)input.Sequence).PubKey;
+					var ms = spend.MultiSigs[i];
+					if (ms.HasOwner && pubKey == ms.OwnerPubKey)
+						return Err("The owner of the group does not sign with the members: he spends alone");
+					var index = IndexOf(ms.SignerPubKeys, pubKey);
+					if (index < 0)
+						return Err("The signing key does not belong to a member of this group");
+					if (SignerScripts(ms, index).Count > RubyMaxLeavesPerInput)
+						return Err($"Ruby signs at most {RubyMaxLeavesPerInput} scripts per coin: this group has too many combinations of signers");
+					pubKeys.Add(pubKey);
+					signerIndices.Add(index);
+				}
+
+				var signerIndex = signerIndices[0];
+				if (spend.Signers.Contains(signerIndex))
+					return Err("You have already signed this payment");
+				if (spend.Signers.Count >= k)
+					return Err("This payment already has all the signatures it needs");
+
+				if (finalPercent >= 0)
+				{
+					if (spend.Signers.Count + 1 < k)
+						return Err($"The fee is chosen by the last signer: this payment has {spend.Signers.Count} of {k} signatures");
+					var index = spend.Bundle.Levels.FindIndex(l => l.Percent == finalPercent);
+					if (index < 0)
+						return Err($"This payment has no +{finalPercent} % fee option");
+					spend.Bundle.Levels = new List<BundleLevel> { spend.Bundle.Levels[index] };
+					spend.Psbts = new List<PSBT> { spend.Psbts[index] };
+				}
+
+				var coin = net.ChainName == ChainName.Mainnet ? "0'" : "1'";
+				var accountPath = KeyPath.Parse("m/86'/" + coin + "/0'");
+				var signed = RubyProcessor.WithClient(device, c =>
+				{
+					var fingerprint = c.GetMasterFingerprint(net);
+					var account = ExtPubKey.Parse(c.GetXpub(net, accountPath), net);
+					if (account.Derive(2).GetPublicKey() != receiving.GetPublicKey() || account.Derive(3).GetPublicKey() != change.GetPublicKey())
+						throw new InvalidOperationException("This Ruby does not hold the keys of this group member");
+					var requests = spend.Psbts.Select(p => ScriptPathRequest(spend, p, pubKeys, signerIndices, fingerprint, accountPath, net)).ToList();
+					// one screen for every fee level: the other levels pay the same outputs, only the change (or, when
+					// everything is sent, the payment) gets less by the extra fee, which Ruby checks (Ruby firmware
+					// 2026-11-15; an older one asks for each level again)
+					if (requests.Count > 1)
+						return c.SignPsbtFeeOptions(requests);
+					return requests.Select(r => c.SignPsbt(r)).ToList();
+				});
+
+				for (int l = 0; l < spend.Psbts.Count; l++)
+				{
+					for (int i = 0; i < spend.MultiSigs.Count; i++)
+					{
+						var ms = spend.MultiSigs[i];
+						var xonly = pubKeys[i].TaprootInternalKey.ToBytes();
+						var xonlyKey = new TaprootPubKey(xonly);
+						var level = spend.Psbts[l].GetGlobalTransaction();
+						foreach (var s in SignerScripts(ms, signerIndices[i]))
+						{
+							var leafHash = ms.Scripts[s].LeafHash;
+							var key = new[] { PsbtInTapScriptSig }.Concat(xonly).Concat(leafHash.ToBytes()).ToArray();
+							if (!signed[l].Inputs[i].Unknown.TryGetValue(key, out var bytes) || !TaprootSignature.TryParse(bytes, out var signature))
+								return Err("Ruby did not sign every input");
+							if (signature.SigHash != SigHash)
+								return Err("Ruby signed with an unexpected sighash");
+							// checked against the tapscript sighash of this level, then stored as SignSpend stores its own
+							var hash = level.GetSignatureHashTaproot(spend.SpentOutputs, new TaprootExecutionData(i, leafHash) { SigHash = SigHash });
+							if (!xonlyKey.VerifySignature(hash, signature.SchnorrSignature))
+								return Err("Ruby returned an invalid signature");
+							spend.Psbts[l].Inputs[i].Unknown[PartialSignatureKey(s, signerIndices[i])] = signature.ToBytes();
+						}
+						ms.PrunePSBT(spend.Psbts[l], i);
+					}
+					spend.Bundle.Levels[l].Psbt = spend.Psbts[l].ToBase64();
+				}
+
+				var signatures = spend.Signers.Count + 1;
+				var signedBundle = JsonSerializer.Serialize(spend.Bundle);
+				if (finalPercent < 0)
+				{
+					return JsonSerializer.Serialize(new
+					{
+						success = true,
+						error = "",
+						bundle = signedBundle,
+						signatures,
+						required = k,
+						complete = signatures >= k,
+						txHex = "",
+						txId = "",
+						feeBtc = 0m,
+						vsize = 0
+					});
+				}
+
+				var tx = FinalizeLevel(spend, 0);
+				return JsonSerializer.Serialize(new
+				{
+					success = true,
+					error = "",
+					bundle = signedBundle,
+					signatures,
+					required = k,
+					complete = true,
+					txHex = tx.ToHex(),
+					txId = tx.GetHash().ToString(),
+					feeBtc = Fee(spend, 0).ToDecimal(MoneyUnit.BTC),
+					vsize = tx.GetVirtualSize()
+				});
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return Err("The payment was declined on Ruby");
+			}
+			catch (Exception e) { return Err(e); }
+		}
+
+		// The indices of the scripts (combinations of signers) the signer is in
+		private static List<int> SignerScripts(DelegatedMultiSig ms, int signerIndex) =>
+			Enumerable.Range(0, ms.Scripts.Count).Where(s => ms.GetScriptSignerIndices(s).Contains(signerIndex)).ToList();
+
+		// The key under which DelegatedMultiSig.SignPSBT keeps a member's signature of a script (BIP174 proprietary
+		// field): 0xFC <compact size 5> "DMSIG" <compact size: script index> <compact size: signer index>
+		private static byte[] PartialSignatureKey(int scriptIndex, int signerIndex)
+		{
+			var key = new List<byte> { 0xFC, 5 };
+			key.AddRange(System.Text.Encoding.ASCII.GetBytes("DMSIG"));
+			key.AddRange(CompactSize((ulong)scriptIndex));
+			key.AddRange(CompactSize((ulong)signerIndex));
+			return key.ToArray();
+		}
+
+		private static byte[] CompactSize(ulong value)
+		{
+			if (value < 0xFD)
+				return new[] { (byte)value };
+			if (value <= 0xFFFF)
+				return new byte[] { 0xFD, (byte)value, (byte)(value >> 8) };
+			return new byte[] { 0xFE, (byte)value, (byte)(value >> 8), (byte)(value >> 16), (byte)(value >> 24) };
+		}
+
+		// The PSBT Ruby signs for one fee level: the coins, and for each input the member's key with its origin and the
+		// leaf hashes of the scripts he is in (PSBT_IN_TAP_BIP32_DERIVATION) plus those scripts with their control
+		// blocks (PSBT_IN_TAP_LEAF_SCRIPT). Nothing else: the other members' signatures stay in the bundle.
+		private static PSBT ScriptPathRequest(Spend spend, PSBT level, List<PubKey> pubKeys, List<int> signerIndices,
+			HDFingerprint fingerprint, KeyPath accountPath, Network net)
+		{
+			var psbt = PSBT.FromTransaction(level.GetGlobalTransaction(), net);
+			for (int i = 0; i < spend.MultiSigs.Count; i++)
+			{
+				var ms = spend.MultiSigs[i];
+				var input = psbt.Inputs[i];
+				input.WitnessUtxo = spend.SpentOutputs[i];
+				var scripts = SignerScripts(ms, signerIndices[i]).Select(s => ms.Scripts[s]).ToList();
+				foreach (var script in scripts)
+				{
+					var control = ms.TaprootSpendInfo.GetControlBlock(script);
+					input.Unknown[new[] { PsbtInTapLeafScript }.Concat(control.ToBytes()).ToArray()] =
+						script.Script.ToBytes().Concat(new[] { (byte)script.Version }).ToArray();
+				}
+				var b = spend.Bundle.Inputs[i];
+				var path = accountPath.Derive(b.IsChange ? 3u : 2u).Derive((uint)b.Sequence);
+				input.HDTaprootKeyPaths[new TaprootPubKey(pubKeys[i].TaprootInternalKey.ToBytes())] =
+					new TaprootKeyPath(new RootedKeyPath(fingerprint, path), scripts.Select(s => s.LeafHash).ToArray());
+			}
+			return psbt;
+		}
+
 		// ---------------------------------------------------------------------
 		// Building
 		// ---------------------------------------------------------------------
