@@ -488,6 +488,96 @@ namespace DistricutedCryptographyLib
 			catch (Exception e) { return Err(e); }
 		}
 
+		/// <summary>
+		/// The owner of a Delegated group spends alone with a Ruby wallet: the same transaction as
+		/// <see cref="OwnerSpend"/>, but the key-path signatures are made on Ruby (2026-11-14). Every input goes to
+		/// Ruby with its Taproot internal key (the owner's key), the merkle root of the members' scripts (Ruby tweaks
+		/// the key with it, BIP341) and the owner's key with its origin: Ruby's master fingerprint +
+		/// m/86'/coin'/0'/{2|3}/sequence. Ruby shows the outputs and the fee; the signatures that come back are
+		/// checked by the script interpreter before anything is returned. The chain keys given (the group's
+		/// ExtPubKeyMultiSigReceiving / Change of the owner) must be Ruby's m/86'/coin'/0'/2 and /3.
+		/// </summary>
+		public static string OwnerSpendWithRuby(GroupSDT group, string utxosJson, string sendTo, string amountBtc,
+			string changeAddr, string feeBtc, bool sendAll, string device, string receivingExtPubKey,
+			string changeExtPubKey, string networkType)
+		{
+			try
+			{
+				if (IsOwnerless(group))
+					return Err($"A Multi Signature group has no owner: every payment needs {group.MinimumShares} signatures");
+				var net = GetNetwork(networkType);
+				var utxos = ParseUtxos(utxosJson);
+				var cache = new Dictionary<string, DelegatedMultiSig>();
+				var multiSigs = utxos.Select(u => GetMultiSig(cache, group, u.Sequence, u.IsChange, net)).ToList();
+				CheckUtxoAddresses(utxos, multiSigs);
+				var receiving = ExtPubKey.Parse((receivingExtPubKey ?? "").Trim(), net);
+				var change = ExtPubKey.Parse((changeExtPubKey ?? "").Trim(), net);
+				for (int i = 0; i < utxos.Count; i++)
+				{
+					var chain = utxos[i].IsChange ? change : receiving;
+					if (chain.Derive((uint)utxos[i].Sequence).PubKey != multiSigs[i].OwnerPubKey)
+						return Err("The signing key is not the key of the owner of this group");
+				}
+
+				var fee = Money.Coins(ParseDec(feeBtc));
+				if (fee <= Money.Zero)
+					return Err("The fee must be greater than zero");
+				var tx = BuildTransaction(utxos, sendTo, amountBtc, changeAddr, fee, sendAll, net, "the fee");
+				var spentOutputs = utxos.Select((u, i) => new TxOut(Money.Coins(ParseDec(u.AmountBtc)), multiSigs[i].Address.ScriptPubKey)).ToArray();
+
+				var coin = net.ChainName == ChainName.Mainnet ? "0'" : "1'";
+				var accountPath = KeyPath.Parse("m/86'/" + coin + "/0'");
+				var signed = RubyProcessor.WithClient(device, c =>
+				{
+					var fingerprint = c.GetMasterFingerprint(net);
+					var account = ExtPubKey.Parse(c.GetXpub(net, accountPath), net);
+					if (account.Derive(2).GetPublicKey() != receiving.GetPublicKey() || account.Derive(3).GetPublicKey() != change.GetPublicKey())
+						throw new InvalidOperationException("This Ruby does not hold the keys of the owner of this group");
+					var psbt = PSBT.FromTransaction(tx, net);
+					for (int i = 0; i < utxos.Count; i++)
+					{
+						var input = psbt.Inputs[i];
+						input.WitnessUtxo = spentOutputs[i];
+						input.TaprootInternalKey = multiSigs[i].InternalKey;
+						input.TaprootMerkleRoot = multiSigs[i].TaprootSpendInfo.MerkleRoot;
+						var path = accountPath.Derive(utxos[i].IsChange ? 3u : 2u).Derive((uint)utxos[i].Sequence);
+						input.HDTaprootKeyPaths[new TaprootPubKey(multiSigs[i].InternalKey.ToBytes())] =
+							new TaprootKeyPath(new RootedKeyPath(fingerprint, path));
+					}
+					return c.SignPsbt(psbt);
+				});
+
+				for (int i = 0; i < utxos.Count; i++)
+				{
+					var signature = signed.Inputs[i].TaprootKeySignature;
+					if (signature == null)
+						return Err("Ruby did not sign every input");
+					if (signature.SigHash != SigHash)
+						return Err("Ruby signed with an unexpected sighash");
+					tx.Inputs[i].WitScript = new WitScript(new[] { signature.ToBytes() });
+				}
+				// the script interpreter checks every signature against the address it spends
+				Validate(tx, spentOutputs);
+
+				var totalIn = spentOutputs.Select(o => o.Value).Sum();
+				var totalOut = tx.Outputs.Select(o => o.Value).Sum();
+				return JsonSerializer.Serialize(new
+				{
+					success = true,
+					error = "",
+					txHex = tx.ToHex(),
+					txId = tx.GetHash().ToString(),
+					feeBtc = (totalIn - totalOut).ToDecimal(MoneyUnit.BTC),
+					vsize = tx.GetVirtualSize()
+				});
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return Err("The payment was declined on Ruby");
+			}
+			catch (Exception e) { return Err(e); }
+		}
+
 		// ---------------------------------------------------------------------
 		// Building
 		// ---------------------------------------------------------------------

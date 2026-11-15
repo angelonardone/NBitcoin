@@ -91,5 +91,13 @@ namespace DistricutedCryptographyLib
 		{
 			return DelegatedMultiSigSpend.OwnerSpend(_group, utxosJson, sendTo, amountBtc, changeAddr, feeBtc, sendAll, receivingExtPrivKey, changeExtPrivKey, networkType);
 		}
+
+		// The same, the owner's wallet is a Ruby wallet: the signatures are made on Ruby (the user confirms there).
+		// receivingExtPubKey / changeExtPubKey: the owner's chain keys of the group (m/86'/coin'/0'/2 and /3).
+		public string OwnerSpendWithRuby(string utxosJson, string sendTo, string amountBtc, string changeAddr,
+			string feeBtc, bool sendAll, string device, string receivingExtPubKey, string changeExtPubKey, string networkType)
+		{
+			return DelegatedMultiSigSpend.OwnerSpendWithRuby(_group, utxosJson, sendTo, amountBtc, changeAddr, feeBtc, sendAll, device, receivingExtPubKey, changeExtPubKey, networkType);
+		}
 	}
 }

@@ -192,5 +192,83 @@ internal static class GroupTests
 				check("a fee option with other coins is refused", e.Message.Contains("same coins"), e.Message);
 			}
 		}
+
+		RunDelegatedOwner(device, mnemonic, net, rpc, ruby, dest, check);
+	}
+
+	// 2026-11-14: a Delegated group (Taproot) whose OWNER is a Ruby wallet spends alone by the key path. The owner's
+	// chain keys are Ruby's m/86'/1'/0'/2 and /3; the members are two software wallets.
+	private static void RunDelegatedOwner(string device, string mnemonic, Network net, RPCClient rpc, RubyClient ruby,
+		string dest, Action<string, bool, string> check)
+	{
+		Console.WriteLine("== Delegated: a Ruby owner spends alone");
+		string X(ExtPubKey k) => k.ToString(net);
+		var taproot = KeyPath.Parse("m/86'/1'/0'");
+		var rubyTaproot = ExtPubKey.Parse(ruby.GetXpub(net, taproot), net);
+		var m1 = new ExtKey().Derive(taproot);
+		var m2 = new ExtKey().Derive(taproot);
+		GroupSDT Group(int k) => new GroupSDT
+		{
+			GroupId = Guid.NewGuid(), GroupType = 30, GroupName = "Delegated Ruby", AmIGroupOwner = true, IsActive = true,
+			MinimumShares = (short)k,
+			ExtPubKeyMultiSigReceiving = X(rubyTaproot.Derive(2)), ExtPubKeyMultiSigChange = X(rubyTaproot.Derive(3)),
+			Contact = new List<ContactItem>
+			{
+				new ContactItem { ContactUserName = "M1", ExtPubKeyMultiSigReceiving = X(m1.Derive(2).Neuter()), ExtPubKeyMultiSigChange = X(m1.Derive(3).Neuter()) },
+				new ContactItem { ContactUserName = "M2", ExtPubKeyMultiSigReceiving = X(m2.Derive(2).Neuter()), ExtPubKeyMultiSigChange = X(m2.Derive(3).Neuter()) },
+			}
+		};
+		var dp = new DelegatedProcessor();
+		check("Delegated FromSDT (Ruby owner)", dp.FromSDT(Group(2)), "");
+		var utxos = new List<object>();
+		foreach (var (seq, isChange, btc) in new[] { (0, false, 0.6m), (1, true, 0.4m) })
+		{
+			var addr = J(dp.CreateAddress(seq, isChange, "RegTest")).GetProperty("address").GetString()!;
+			var txid = rpc.SendToAddress(BitcoinAddress.Create(addr, net), Money.Coins(btc));
+			var vout = rpc.GetRawTransaction(txid).Outputs.FindIndex(o => o.ScriptPubKey == BitcoinAddress.Create(addr, net).ScriptPubKey);
+			utxos.Add(new { TxId = txid.ToString(), Vout = vout, AmountBtc = btc.ToString(System.Globalization.CultureInfo.InvariantCulture), Sequence = seq, IsChange = isChange, Address = addr });
+		}
+		rpc.Generate(1);
+		var change = J(dp.CreateAddress(2, true, "RegTest")).GetProperty("address").GetString()!;
+		var r = J(dp.OwnerSpendWithRuby(JsonSerializer.Serialize(utxos), dest, "0.7", change, "0.0001", false, device,
+			X(rubyTaproot.Derive(2)), X(rubyTaproot.Derive(3)), "RegTest"));
+		check("Ruby owner signs alone (key path, 2 inputs of 2 chains)", r.GetProperty("success").GetBoolean(), r.GetProperty("error").GetString()!);
+		if (r.GetProperty("success").GetBoolean())
+		{
+			var txid = rpc.SendRawTransaction(Transaction.Parse(r.GetProperty("txHex").GetString()!, net));
+			rpc.Generate(1);
+			check("Delegated (Ruby owner) accepted by the node and mined", rpc.GetRawTransactionInfo(txid).Confirmations >= 1,
+				$"{txid} vsize {r.GetProperty("vsize").GetInt32()} fee {r.GetProperty("feeBtc").GetDecimal()}");
+		}
+		// the firmware itself (main/utils/psbt.c): a key path with a merkle root is signed only if the coin pays to the
+		// key tweaked with THAT root. A PSBT with another root gets no signature.
+		{
+			var u0 = JsonDocument.Parse(JsonSerializer.Serialize(utxos[0])).RootElement;
+			var tx = net.CreateTransaction();
+			tx.Inputs.Add(new OutPoint(uint256.Parse(u0.GetProperty("TxId").GetString()!), u0.GetProperty("Vout").GetInt32()));
+			tx.Outputs.Add(Money.Coins(0.5m), BitcoinAddress.Create(dest, net));
+			var psbt = PSBT.FromTransaction(tx, net);
+			var ownerKey = rubyTaproot.Derive(2).Derive(0).PubKey;
+			psbt.Inputs[0].WitnessUtxo = new TxOut(Money.Coins(0.6m), BitcoinAddress.Create(u0.GetProperty("Address").GetString()!, net).ScriptPubKey);
+			psbt.Inputs[0].TaprootInternalKey = ownerKey.TaprootInternalKey;
+			psbt.Inputs[0].TaprootMerkleRoot = new uint256(RandomUtils.GetBytes(32));
+			psbt.Inputs[0].HDTaprootKeyPaths[new TaprootPubKey(ownerKey.TaprootInternalKey.ToBytes())] =
+				new TaprootKeyPath(new RootedKeyPath(ruby.GetMasterFingerprint(net), taproot.Derive(2).Derive(0)));
+			var back = ruby.SignPsbt(psbt);
+			check("a key path with a wrong merkle root is not signed", back.Inputs[0].TaprootKeySignature == null, "");
+		}
+		// the keys of another wallet as the owner's: refused before anything is shown on Ruby
+		var other = new ExtKey().Derive(taproot);
+		var bad = J(dp.OwnerSpendWithRuby(JsonSerializer.Serialize(utxos), dest, "0.1", change, "0.0001", false, device,
+			X(other.Derive(2).Neuter()), X(other.Derive(3).Neuter()), "RegTest"));
+		check("keys that are not the owner's are refused", !bad.GetProperty("success").GetBoolean(), bad.GetProperty("error").GetString()!);
+		// a Ruby with other words is refused
+		var dp2 = new DelegatedProcessor();
+		dp2.FromSDT(Group(2));
+		ruby.DebugSetMnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
+		var wrong = J(dp2.OwnerSpendWithRuby(JsonSerializer.Serialize(utxos), dest, "0.1", change, "0.0001", false, device,
+			X(rubyTaproot.Derive(2)), X(rubyTaproot.Derive(3)), "RegTest"));
+		check("a Ruby with other words is refused (Delegated owner)", !wrong.GetProperty("success").GetBoolean() && wrong.GetProperty("error").GetString()!.Contains("does not hold"), wrong.GetProperty("error").GetString()!);
+		ruby.DebugSetMnemonic(mnemonic);
 	}
 }
