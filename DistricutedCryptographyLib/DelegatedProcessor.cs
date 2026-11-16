@@ -107,5 +107,13 @@ namespace DistricutedCryptographyLib
 		{
 			return DelegatedMultiSigSpend.OwnerSpendWithRuby(_group, utxosJson, sendTo, amountBtc, changeAddr, feeBtc, sendAll, device, receivingExtPubKey, changeExtPubKey, networkType);
 		}
+
+		// Registers the group on the Ruby of a participant (the user checks it on Ruby), so that Ruby recognises the
+		// group's change. The payments with Ruby (OwnerSpendWithRuby / SignSpendWithRuby) already do it the first time;
+		// this is for registering it beforehand. {"success", "error", "status": "registered" | "already registered"}
+		public string RegisterGroupWithRuby(string device, string receivingExtPubKey, string changeExtPubKey, string networkType)
+		{
+			return DelegatedMultiSigSpend.RegisterGroupWithRuby(_group, device, receivingExtPubKey, changeExtPubKey, networkType);
+		}
 	}
 }

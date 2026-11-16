@@ -89,6 +89,13 @@ internal static class GroupTests
 		var dest = rpc.GetNewAddress().ToString();
 		var gp = new GroupProcessor();
 
+		// TESTRUBY_GROUPS=registration: only the group registration tests (RunGroupRegistration)
+		if (Environment.GetEnvironmentVariable("TESTRUBY_GROUPS") == "registration")
+		{
+			RunGroupRegistration(device, mnemonic, net, rpc, ruby, dest, check);
+			return;
+		}
+
 		// 1. software A starts with +10 % / +50 %, Ruby is the last signer and chooses +50 %
 		{
 			var g = Group(2);
@@ -425,6 +432,278 @@ internal static class GroupTests
 			var wrong = J(dp.SignSpendWithRuby(bundle, device, RubyR(), RubyC(), -1, "RegTest"));
 			check("a Ruby with other words is refused (member)", !wrong.GetProperty("success").GetBoolean() && wrong.GetProperty("error").GetString()!.Contains("does not hold"), wrong.GetProperty("error").GetString()!);
 			ruby.DebugSetMnemonic(mnemonic);
+		}
+
+		RunGroupRegistration(device, mnemonic, net, rpc, ruby, dest, check);
+	}
+
+	// 2026-11-16: a Taproot group registered on Ruby (register_group). Ruby calculates the group's addresses itself
+	// (firmware main/group.c) and recognises the group's change in a payment of that group.
+	// The firmware log is read when the firmware is built with --log-cbor (see FirmwareLog).
+	private static void RunGroupRegistration(string device, string mnemonic, Network net, RPCClient rpc, RubyClient ruby,
+		string dest, Action<string, bool, string> check)
+	{
+		Console.WriteLine("== Groups registered on Ruby");
+		string X(ExtPubKey k) => k.ToString(net);
+		var taproot = KeyPath.Parse("m/86'/1'/0'");
+		var rubyTaproot = ExtPubKey.Parse(ruby.GetXpub(net, taproot), net);
+		string RubyR() => X(rubyTaproot.Derive(2));
+		string RubyC() => X(rubyTaproot.Derive(3));
+
+		var uart = new FirmwareLog(ruby);
+
+		void Clean()
+		{
+			ruby.DebugCleanReset();
+			ruby.DebugSetMnemonic(mnemonic);
+		}
+
+		ContactItem Member(string name, ExtPubKey account) => new ContactItem
+		{
+			ContactUserName = name, ExtPubKeyMultiSigReceiving = X(account.Derive(2)), ExtPubKeyMultiSigChange = X(account.Derive(3))
+		};
+		// a group of n participants with keys in the scripts (Delegated: the members; Multi Signature: every signer,
+		// the creator included), k of them sign. rubyRole: "owner" (Delegated), "creator" (Multi Signature), "member",
+		// or "none" (Ruby is not in the group).
+		GroupSDT Shape(bool multisig, int n, int k, string rubyRole, string label)
+		{
+			var others = Enumerable.Range(0, n + 1).Select(_ => new ExtKey().Derive(taproot).Neuter()).ToList();
+			var rubyInScripts = rubyRole == "member" || rubyRole == "creator";
+			var ownerKey = rubyRole == "owner" || rubyRole == "creator" ? rubyTaproot : others[n];
+			var contacts = new List<ContactItem>();
+			var scriptParticipants = multisig ? n - 1 : n; // the creator of a Multi Signature is the owner fields
+			for (int i = 0; i < scriptParticipants; i++)
+			{
+				var isRuby = rubyRole == "member" && i == 0;
+				contacts.Add(Member(isRuby ? "Ruby" : $"P{i}", isRuby ? rubyTaproot : others[i]));
+			}
+			_ = rubyInScripts;
+			return new GroupSDT
+			{
+				GroupId = Guid.NewGuid(), GroupType = multisig ? DelegatedMultiSigSpend.MultiSignatureGroupType : (short)30,
+				GroupName = label, AmIGroupOwner = rubyRole == "owner" || rubyRole == "creator", IsActive = true,
+				MinimumShares = (short)k,
+				ExtPubKeyMultiSigReceiving = X(ownerKey.Derive(2)), ExtPubKeyMultiSigChange = X(ownerKey.Derive(3)),
+				Contact = contacts
+			};
+		}
+		string NameOf(string label) =>
+			ruby.GetRegisteredGroups().FirstOrDefault(g => g.Value is IDictionary<string, object?> d && d["label"] as string == label).Key ?? "";
+
+		// 1. Ruby calculates exactly the library's addresses (receiving and change chains, several indices), for
+		//    Delegated and Multi Signature groups of every size Ruby takes, with Ruby as owner, creator or member
+		Clean();
+		var shapes = new (bool multisig, int n, int k, string role)[]
+		{
+			(false, 2, 1, "owner"), (false, 3, 2, "owner"), (false, 3, 2, "member"), (false, 4, 4, "member"),
+			(false, 5, 3, "member"), (false, 8, 4, "member"), (false, 15, 2, "member"), (false, 13, 5, "member"),
+			(true, 2, 2, "creator"), (true, 3, 2, "creator"), (true, 4, 3, "member"), (true, 6, 3, "member"), (true, 15, 14, "creator"),
+		};
+		foreach (var (multisig, n, k, role) in shapes)
+		{
+			var label = $"{(multisig ? "MS" : "DG")} {k}of{n} {role}";
+			var group = Shape(multisig, n, k, role, label);
+			var dp = new DelegatedProcessor();
+			dp.FromSDT(group);
+			var watch = System.Diagnostics.Stopwatch.StartNew();
+			var reg = J(dp.RegisterGroupWithRuby(device, RubyR(), RubyC(), "RegTest"));
+			var regMs = watch.ElapsedMilliseconds;
+			check($"register {label}", reg.GetProperty("success").GetBoolean() && reg.GetProperty("status").GetString() == "registered",
+				reg.GetProperty("error").GetString()! + $" ({regMs} ms)");
+			var name = NameOf(label);
+			var same = true;
+			var detail = $"name {name}, register {regMs} ms";
+			foreach (var (isChange, index) in new[] { (false, 0u), (true, 0u), (false, 7u), (true, 1234u) })
+			{
+				var expected = J(dp.CreateAddress((int)index, isChange, "RegTest")).GetProperty("address").GetString();
+				watch.Restart();
+				var actual = name.Length > 0 ? ruby.GetGroupAddress(net, name, isChange, index) : "";
+				detail += $", {(isChange ? "change" : "receiving")} {index} {watch.ElapsedMilliseconds} ms";
+				if (actual != expected)
+				{
+					same = false;
+					detail += $" MISMATCH ruby {actual} lib {expected}";
+				}
+			}
+			check($"{label}: Ruby's addresses = the library's", same, detail);
+			var again = J(dp.RegisterGroupWithRuby(device, RubyR(), RubyC(), "RegTest"));
+			check($"{label}: registering it again asks nothing", again.GetProperty("success").GetBoolean() && again.GetProperty("status").GetString() == "already registered", "");
+			Clean(); // one at a time: the storage of the emulator holds about 10 KB of registrations
+		}
+
+		// 2. refused by the firmware: a group without Ruby, keys of another network, too many combinations
+		{
+			var none = Shape(false, 3, 2, "none", "no Ruby");
+			var keys = DelegatedMultiSigSpend.RubyGroupRecord(none, net);
+			try
+			{
+				ruby.RegisterGroup(net, "dcnoruby", "no Ruby", keys.type, keys.k, keys.owner, keys.signers, taproot.Derive(2), taproot.Derive(3));
+				check("a group without Ruby is refused", false, "registered");
+			}
+			catch (RubyException e) { check("a group without Ruby is refused", e.Message.Contains("not a participant"), e.Message); }
+
+			// the raw request, so the keys can be of another network than the request, and the group bigger than the
+			// library allows: owner = the Delegated owner's chain keys; signers = the members' chain keys
+			IDictionary<string, object?> Raw(GroupSDT g, Network keysNet, string name)
+			{
+				object Chains(string? r, string? c) => new Dictionary<string, object?>
+				{
+					["receiving"] = ExtPubKey.Parse(r!, net).ToString(keysNet),
+					["change"] = ExtPubKey.Parse(c!, net).ToString(keysNet)
+				};
+				return new Dictionary<string, object?>
+				{
+					["network"] = RubyClient.ToRubyNetwork(net), ["group_name"] = name, ["label"] = name, ["type"] = "delegated",
+					["threshold"] = (long)g.MinimumShares,
+					["owner"] = Chains(g.ExtPubKeyMultiSigReceiving, g.ExtPubKeyMultiSigChange),
+					["signers"] = g.Contact.Select(c => Chains(c.ExtPubKeyMultiSigReceiving, c.ExtPubKeyMultiSigChange)).ToList<object?>(),
+					["receiving_path"] = taproot.Derive(2).Indexes.Select(i => (object?)(long)i).ToList(),
+					["change_path"] = taproot.Derive(3).Indexes.Select(i => (object?)(long)i).ToList(),
+				};
+			}
+			try
+			{
+				ruby.Call("register_group", Raw(Shape(false, 3, 2, "member", "mainnet keys"), Network.Main, "dcmain"), waitsForUser: true);
+				check("keys of another network are refused", false, "registered");
+			}
+			catch (RubyException e) { check("keys of another network are refused", e.Message.Contains("keys"), e.Message); }
+
+			try
+			{
+				ruby.Call("register_group", Raw(Shape(false, 15, 6, "member", "too big"), net, "dcbig"), waitsForUser: true); // 5005
+				check("a group with more than 2000 combinations is refused", false, "registered");
+			}
+			catch (RubyException e) { check("a group with more than 2000 combinations is refused", e.Message.Contains("combinations"), e.Message); }
+		}
+
+		// 3. payments: the change of the group is recognised (and not shown) only for a payment of that same group
+		List<object> Fund(DelegatedProcessor p)
+		{
+			var utxos = new List<object>();
+			foreach (var (seq, isChange, btc) in new[] { (0, false, 0.6m), (1, true, 0.4m) })
+			{
+				var addr = J(p.CreateAddress(seq, isChange, "RegTest")).GetProperty("address").GetString()!;
+				var txid = rpc.SendToAddress(BitcoinAddress.Create(addr, net), Money.Coins(btc));
+				var vout = rpc.GetRawTransaction(txid).Outputs.FindIndex(o => o.ScriptPubKey == BitcoinAddress.Create(addr, net).ScriptPubKey);
+				utxos.Add(new { TxId = txid.ToString(), Vout = vout, AmountBtc = btc.ToString(System.Globalization.CultureInfo.InvariantCulture), Sequence = seq, IsChange = isChange, Address = addr });
+			}
+			rpc.Generate(1);
+			return utxos;
+		}
+		{
+			Clean();
+			// Delegated, Ruby owner: OwnerSpendWithRuby registers the group (first payment) and the change is recognised
+			var owned = Shape(false, 3, 2, "owner", "Owner change");
+			var dp = new DelegatedProcessor();
+			dp.FromSDT(owned);
+			var utxos = Fund(dp);
+			var change = J(dp.CreateAddress(9, true, "RegTest")).GetProperty("address").GetString()!;
+			uart.Mark();
+			var r = J(dp.OwnerSpendWithRuby(JsonSerializer.Serialize(utxos), dest, "0.7", change, "0.0001", false, device, RubyR(), RubyC(), "RegTest"));
+			check("owner payment: the group is registered by the first payment", r.GetProperty("success").GetBoolean() && NameOf("Owner change").Length > 0, r.GetProperty("error").GetString()!);
+			uart.Check(check, "owner payment: Ruby recognises the group's change (change 9)", "Output 1 group change address validated", true);
+			if (r.GetProperty("success").GetBoolean())
+			{
+				rpc.SendRawTransaction(Transaction.Parse(r.GetProperty("txHex").GetString()!, net));
+				rpc.Generate(1);
+			}
+
+			// the change sent to ANOTHER group of Ruby: not this group's change, so it is shown
+			var otherGroup = Shape(false, 3, 2, "owner", "Other group");
+			var dpOther = new DelegatedProcessor();
+			dpOther.FromSDT(otherGroup);
+			J(dpOther.RegisterGroupWithRuby(device, RubyR(), RubyC(), "RegTest"));
+			var foreignChange = J(dpOther.CreateAddress(0, true, "RegTest")).GetProperty("address").GetString()!;
+			utxos = Fund(dp);
+			uart.Mark();
+			r = J(dp.OwnerSpendWithRuby(JsonSerializer.Serialize(utxos), dest, "0.7", foreignChange, "0.0001", false, device, RubyR(), RubyC(), "RegTest"));
+			check("owner payment with the change to another group: signed", r.GetProperty("success").GetBoolean(), r.GetProperty("error").GetString()!);
+			uart.Check(check, "the change to another group is not taken as this group's change", "group change address validated", false);
+
+			// member payments (script path): Delegated and Multi Signature, Ruby signs first with 2 fee levels
+			foreach (var (multisig, label) in new[] { (false, "Member change"), (true, "MultiSig change") })
+			{
+				var group = Shape(multisig, 3, 2, multisig ? "creator" : "member", label);
+				var p = new DelegatedProcessor();
+				p.FromSDT(group);
+				var u = Fund(p);
+				var ch = J(p.CreateAddress(3, true, "RegTest")).GetProperty("address").GetString()!;
+				var built = J(p.BuildSpend(JsonSerializer.Serialize(u), dest, "0.7", ch, "0.0001", "10", false, "RegTest"));
+				uart.Mark();
+				var s = J(p.SignSpendWithRuby(built.GetProperty("bundle").GetString()!, device, RubyR(), RubyC(), -1, "RegTest"));
+				check($"{label}: Ruby signs (and registers the group)", s.GetProperty("success").GetBoolean() && NameOf(label).Length > 0, s.GetProperty("error").GetString()!);
+				uart.Check(check, $"{label}: Ruby recognises the group's change", "Output 1 group change address validated", true);
+			}
+		}
+
+		// 4. the storage is never filled: registrations stop with a reserve left for the PIN counter
+		{
+			Clean();
+			var count = 0;
+			string? refusal = null;
+			while (count < 30 && refusal == null)
+			{
+				var keys = DelegatedMultiSigSpend.RubyGroupRecord(Shape(false, 15, 2, "member", $"Fill {count}"), net);
+				try
+				{
+					ruby.RegisterGroup(net, $"dcfill{count:D2}", $"Fill {count}", keys.type, keys.k, keys.owner, keys.signers, taproot.Derive(2), taproot.Derive(3));
+					count++;
+				}
+				catch (RubyException e) { refusal = e.Message; }
+			}
+			var info = ruby.GetVersionInfo();
+			var free = info.TryGetValue("JADE_NVS_ENTRIES_FREE", out var f) && f is long l ? l : -1;
+			check("registrations stop before the storage is full", refusal != null && refusal.Contains("storage") && free >= 32,
+				$"{count} groups of 16 participants registered, then: {refusal}; NVS entries free {free}");
+			// another wallet does not see (or use) these registrations: they carry the HMAC of this wallet
+			ruby.DebugSetMnemonic("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
+			check("another wallet does not see the groups", ruby.GetRegisteredGroups().Count == 0, "");
+			ruby.DebugSetMnemonic(mnemonic);
+			check("this wallet sees them again", ruby.GetRegisteredGroups().Count == count, "");
+			Clean();
+		}
+	}
+
+	// The firmware log: a firmware built with --log-cbor sends its log lines over the RPC connection, and RubyClient
+	// passes them to its Log callback. Mark() remembers where the log is, Check() looks only at what came after.
+	// With a firmware without logs the checks are skipped.
+	private sealed class FirmwareLog
+	{
+		private readonly System.Text.StringBuilder _log = new System.Text.StringBuilder();
+		private int _mark;
+
+		public FirmwareLog(RubyClient ruby)
+		{
+			var previous = ruby.Log;
+			ruby.Log = line =>
+			{
+				lock (_log)
+					_log.AppendLine(line);
+				previous?.Invoke(line);
+			};
+		}
+
+		private string Log()
+		{
+			lock (_log)
+				return _log.ToString();
+		}
+
+		public void Mark() => _mark = Log().Length;
+
+		public void Check(Action<string, bool, string> check, string what, string text, bool expected)
+		{
+			var log = Log();
+			if (log.Length == 0)
+			{
+				Console.WriteLine($"  (skipped, the firmware sends no log: build it with --log-cbor) {what}");
+				return;
+			}
+			var recent = log.Length > _mark ? log.Substring(_mark) : "";
+			var found = recent.Contains(text);
+			var lines = recent.Split('\n');
+			var line = lines.FirstOrDefault(s => s.Contains(text)) ?? lines.FirstOrDefault(s => s.Contains("group") && (s.Contains("Found") || s.Contains("No registered") || s.Contains("abandoned"))) ?? "";
+			check(what, found == expected, line.Trim());
 		}
 	}
 }

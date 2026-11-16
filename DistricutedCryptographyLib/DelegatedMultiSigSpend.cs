@@ -525,15 +525,16 @@ namespace DistricutedCryptographyLib
 				var tx = BuildTransaction(utxos, sendTo, amountBtc, changeAddr, fee, sendAll, net, "the fee");
 				var spentOutputs = utxos.Select((u, i) => new TxOut(Money.Coins(ParseDec(u.AmountBtc)), multiSigs[i].Address.ScriptPubKey)).ToArray();
 
-				var coin = net.ChainName == ChainName.Mainnet ? "0'" : "1'";
-				var accountPath = KeyPath.Parse("m/86'/" + coin + "/0'");
+				var accountPath = RubyAccountPath(net);
 				var signed = RubyProcessor.WithClient(device, c =>
 				{
 					var fingerprint = c.GetMasterFingerprint(net);
-					var account = ExtPubKey.Parse(c.GetXpub(net, accountPath), net);
-					if (account.Derive(2).GetPublicKey() != receiving.GetPublicKey() || account.Derive(3).GetPublicKey() != change.GetPublicKey())
-						throw new InvalidOperationException("This Ruby does not hold the keys of the owner of this group");
+					CheckRubyChains(c, net, accountPath, receiving, change, "This Ruby does not hold the keys of the owner of this group");
+					// the group registered on Ruby (asked once), so that Ruby recognises the change and does not show it
+					EnsureRubyGroup(c, group, net, accountPath);
 					var psbt = PSBT.FromTransaction(tx, net);
+					if (tx.Outputs.Count == 2)
+						AddRubyChangeKeyPath(psbt, 1, group, change, fingerprint, accountPath, cache, net);
 					for (int i = 0; i < utxos.Count; i++)
 					{
 						var input = psbt.Inputs[i];
@@ -642,15 +643,20 @@ namespace DistricutedCryptographyLib
 					spend.Psbts = new List<PSBT> { spend.Psbts[index] };
 				}
 
-				var coin = net.ChainName == ChainName.Mainnet ? "0'" : "1'";
-				var accountPath = KeyPath.Parse("m/86'/" + coin + "/0'");
+				var accountPath = RubyAccountPath(net);
+				var cache = new Dictionary<string, DelegatedMultiSig>();
 				var signed = RubyProcessor.WithClient(device, c =>
 				{
 					var fingerprint = c.GetMasterFingerprint(net);
-					var account = ExtPubKey.Parse(c.GetXpub(net, accountPath), net);
-					if (account.Derive(2).GetPublicKey() != receiving.GetPublicKey() || account.Derive(3).GetPublicKey() != change.GetPublicKey())
-						throw new InvalidOperationException("This Ruby does not hold the keys of this group member");
+					CheckRubyChains(c, net, accountPath, receiving, change, "This Ruby does not hold the keys of this group member");
+					// the group registered on Ruby (asked once), so that Ruby recognises the change and does not show it
+					EnsureRubyGroup(c, group, net, accountPath);
 					var requests = spend.Psbts.Select(p => ScriptPathRequest(spend, p, pubKeys, signerIndices, fingerprint, accountPath, net)).ToList();
+					foreach (var request in requests)
+					{
+						if (request.Outputs.Count == 2)
+							AddRubyChangeKeyPath(request, 1, group, change, fingerprint, accountPath, cache, net);
+					}
 					// one screen for every fee level: the other levels pay the same outputs, only the change (or, when
 					// everything is sent, the payment) gets less by the extra fee, which Ruby checks (Ruby firmware
 					// 2026-11-15; an older one asks for each level again)
@@ -749,6 +755,150 @@ namespace DistricutedCryptographyLib
 			if (value <= 0xFFFF)
 				return new byte[] { 0xFD, (byte)value, (byte)(value >> 8) };
 			return new byte[] { 0xFE, (byte)value, (byte)(value >> 8), (byte)(value >> 16), (byte)(value >> 24) };
+		}
+
+		// ---------------------------------------------------------------------
+		// Group registration on Ruby (Ruby firmware register_group, 2026-11-16; Ruby RUBY-GROUPS.md)
+		// ---------------------------------------------------------------------
+
+		// How far the change chain is searched for the index of the change address (it is only given as an address)
+		private const int RubyChangeSearchLimit = 2000;
+
+		// The registration of a group on Ruby: the same keys as the group's addresses. The name (Ruby's storage key, at
+		// most 15 characters) is a hash of the group's two ranged descriptors, so a group whose keys changed is
+		// registered again under a new name instead of being taken for the old one.
+		public static (string name, string label, string type, int k, (ExtPubKey, ExtPubKey)? owner,
+			List<(ExtPubKey, ExtPubKey)> signers) RubyGroupRecord(GroupSDT group, Network net)
+		{
+			var (ownerReceiving, receiving, k) = GroupKeys(group, false, net);
+			var (ownerChange, change, _) = GroupKeys(group, true, net);
+			// the same participant on both chains (by his place in the contact list; -1 = the owner of a Multi Signature)
+			var receivingByPosition = MemberXpubs(group, false).ToDictionary(m => m.position, m => ExtPubKey.Parse(m.xpub, net));
+			var changeByPosition = MemberXpubs(group, true).ToDictionary(m => m.position, m => ExtPubKey.Parse(m.xpub, net));
+			if (receivingByPosition.Count != changeByPosition.Count || receivingByPosition.Keys.Any(p => !changeByPosition.ContainsKey(p)))
+				throw new Exception("Every participant needs a receiving and a change extended public key");
+			var signers = receivingByPosition.Keys.OrderBy(p => p)
+				.Select(p => (receivingByPosition[p], changeByPosition[p])).ToList();
+
+			var ownerless = ownerReceiving == null;
+			var descriptors = ownerless
+				? TaprootMultiSig.GetRangedDescriptor(receiving, k, net) + "|" + TaprootMultiSig.GetRangedDescriptor(change, k, net)
+				: DelegatedMultiSig.GetRangedDescriptor(ownerReceiving!, receiving, k, net) + "|" + DelegatedMultiSig.GetRangedDescriptor(ownerChange!, change, k, net);
+			var hash = NBitcoin.Crypto.Hashes.SHA256(System.Text.Encoding.UTF8.GetBytes(descriptors));
+			var name = "dc" + NBitcoin.DataEncoders.Encoders.Hex.EncodeData(hash).Substring(0, 13);
+
+			var label = new string((group.GroupName ?? "").Trim().Where(ch => ch >= 32 && ch < 127).Take(40).ToArray());
+			if (label.Length == 0)
+				label = name;
+			return (name, label, ownerless ? "multisig" : "delegated", k,
+				ownerless ? ((ExtPubKey, ExtPubKey)?)null : (ownerReceiving!, ownerChange!), signers);
+		}
+
+		/// <summary>
+		/// Registers the group on a Ruby once (the user checks the group and its first address on Ruby), so that Ruby
+		/// recognises the group's change in its payments and does not show it. An identical registration is not asked
+		/// again. Returns what happened: "registered", "already registered", or why it was not registered (declined on
+		/// Ruby, an older firmware, no space...); a payment goes on in every case (Ruby then shows the change).
+		/// </summary>
+		internal static string EnsureRubyGroup(RubyClient c, GroupSDT group, Network net, KeyPath accountPath)
+		{
+			try
+			{
+				var record = RubyGroupRecord(group, net);
+				if (c.GetRegisteredGroups().ContainsKey(record.name))
+					return "already registered";
+				c.RegisterGroup(net, record.name, record.label, record.type, record.k, record.owner, record.signers,
+					accountPath.Derive(2), accountPath.Derive(3));
+				return "registered";
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return "declined on Ruby";
+			}
+			catch (RubyException e)
+			{
+				return "not registered: " + e.Message;
+			}
+		}
+
+		/// <summary>
+		/// Registers the group on the Ruby wallet's device (see <see cref="EnsureRubyGroup"/>). The chain keys given
+		/// (the participant's ExtPubKeyMultiSigReceiving / Change) must be Ruby's m/86'/coin'/0'/2 and /3.
+		/// Returns {"success", "error", "status"} with status "registered" or "already registered".
+		/// </summary>
+		public static string RegisterGroupWithRuby(GroupSDT group, string device, string receivingExtPubKey,
+			string changeExtPubKey, string networkType)
+		{
+			try
+			{
+				var net = GetNetwork(networkType);
+				var receiving = ExtPubKey.Parse((receivingExtPubKey ?? "").Trim(), net);
+				var change = ExtPubKey.Parse((changeExtPubKey ?? "").Trim(), net);
+				var accountPath = RubyAccountPath(net);
+				var status = RubyProcessor.WithClient(device, c =>
+				{
+					CheckRubyChains(c, net, accountPath, receiving, change, "This Ruby does not hold the keys of this group participant");
+					var record = RubyGroupRecord(group, net);
+					if (c.GetRegisteredGroups().ContainsKey(record.name))
+						return "already registered";
+					c.RegisterGroup(net, record.name, record.label, record.type, record.k, record.owner, record.signers,
+						accountPath.Derive(2), accountPath.Derive(3));
+					return "registered";
+				});
+				return JsonSerializer.Serialize(new { success = true, error = "", status });
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return Err("The registration was declined on Ruby");
+			}
+			catch (Exception e) { return Err(e); }
+		}
+
+		private static KeyPath RubyAccountPath(Network net) =>
+			KeyPath.Parse("m/86'/" + (net.ChainName == ChainName.Mainnet ? "0'" : "1'") + "/0'");
+
+		private static void CheckRubyChains(RubyClient c, Network net, KeyPath accountPath, ExtPubKey receiving,
+			ExtPubKey change, string error)
+		{
+			var account = ExtPubKey.Parse(c.GetXpub(net, accountPath), net);
+			if (account.Derive(2).GetPublicKey() != receiving.GetPublicKey() || account.Derive(3).GetPublicKey() != change.GetPublicKey())
+				throw new InvalidOperationException(error);
+		}
+
+		/// <summary>
+		/// Ruby recognises the group's change only through Ruby's own key in that output (BIP371
+		/// PSBT_OUT_TAP_BIP32_DERIVATION: the key, its origin m/86'/coin'/0'/3/i and the leaf hashes of the scripts it is
+		/// in; none for the owner of a Delegated group, whose key is the internal key). The index i of the change
+		/// address is searched on the group's change chain. Nothing is added if the output is not a group change
+		/// address or Ruby's key is not in it.
+		/// </summary>
+		internal static void AddRubyChangeKeyPath(PSBT psbt, int outputIndex, GroupSDT group, ExtPubKey rubyChange,
+			HDFingerprint fingerprint, KeyPath accountPath, Dictionary<string, DelegatedMultiSig> cache, Network net)
+		{
+			if (outputIndex < 0 || outputIndex >= psbt.Outputs.Count)
+				return;
+			var script = psbt.Outputs[outputIndex].ScriptPubKey;
+			for (int sequence = 0; sequence < RubyChangeSearchLimit; sequence++)
+			{
+				var ms = GetMultiSig(cache, group, sequence, true, net);
+				if (ms.Address.ScriptPubKey != script)
+					continue;
+				var pubKey = rubyChange.Derive((uint)sequence).PubKey;
+				uint256[] leafHashes;
+				if (ms.HasOwner && pubKey == ms.OwnerPubKey)
+					leafHashes = Array.Empty<uint256>();
+				else
+				{
+					var index = IndexOf(ms.SignerPubKeys, pubKey);
+					if (index < 0)
+						return;
+					leafHashes = SignerScripts(ms, index).Select(s => ms.Scripts[s].LeafHash).ToArray();
+				}
+				var path = accountPath.Derive(3).Derive((uint)sequence);
+				psbt.Outputs[outputIndex].HDTaprootKeyPaths[new TaprootPubKey(pubKey.TaprootInternalKey.ToBytes())] =
+					new TaprootKeyPath(new RootedKeyPath(fingerprint, path), leafHashes);
+				return;
+			}
 		}
 
 		// The PSBT Ruby signs for one fee level: the coins, and for each input the member's key with its origin and the

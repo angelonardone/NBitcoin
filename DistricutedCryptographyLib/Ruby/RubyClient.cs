@@ -426,5 +426,53 @@ namespace DistricutedCryptographyLib
 			if (reply is not bool ok || !ok)
 				throw new RubyException(RubyException.ProtocolError, "Ruby did not register the multisig");
 		}
+
+		/// <summary>
+		/// The DistributedCryptography Taproot groups registered on Ruby (for the current wallet):
+		/// name -> {label, type ("delegated" | "multisig"), threshold, num_signers, owner}.
+		/// </summary>
+		public IDictionary<string, object?> GetRegisteredGroups() =>
+			Call("get_registered_groups") as IDictionary<string, object?>
+			?? throw new RubyException(RubyException.ProtocolError, "Invalid get_registered_groups reply");
+
+		/// <summary>
+		/// An address of a registered group, calculated by Ruby and shown there for the user to confirm (the user can
+		/// compare it with the one the app shows). isChange: the group's change chain; index: the address number.
+		/// </summary>
+		public string GetGroupAddress(Network network, string groupName, bool isChange, uint index) =>
+			Call("get_receive_address", P(("network", ToRubyNetwork(network)), ("group_name", groupName),
+				("branch", isChange ? 1L : 0L), ("pointer", (long)index)), waitsForUser: true) as string
+			?? throw new RubyException(RubyException.ProtocolError, "Invalid get_receive_address reply");
+
+		/// <summary>
+		/// Registers a DistributedCryptography Taproot group on Ruby (see RUBY-GROUPS.md in the Ruby repository). The
+		/// user checks the group and its first address on the device; an identical registration answers at once
+		/// without asking. After it, Ruby recognises the group's own addresses in a payment of the group (its change
+		/// is not shown for confirmation).
+		/// </summary>
+		/// <param name="name">Storage name on Ruby, at most 15 characters (letters, digits, '_' and '-').</param>
+		/// <param name="label">The name shown on Ruby (the group's name), at most 40 printable characters.</param>
+		/// <param name="type">"delegated" (owner key path + member scripts) or "multisig" (MuSig aggregate + scripts).</param>
+		/// <param name="owner">Delegated: the owner's receiving and change chain xpubs; null for Multi Signature.</param>
+		/// <param name="signers">The members (Delegated) or every signer (Multi Signature): receiving and change chain xpubs.</param>
+		/// <param name="receivingPath">This Ruby's receiving chain path (eg. m/86'/1'/0'/2): its xpub must be in the group.</param>
+		/// <param name="changePath">This Ruby's change chain path (eg. m/86'/1'/0'/3).</param>
+		public void RegisterGroup(Network network, string name, string label, string type, int threshold,
+			(ExtPubKey receiving, ExtPubKey change)? owner, IList<(ExtPubKey receiving, ExtPubKey change)> signers,
+			KeyPath receivingPath, KeyPath changePath)
+		{
+			object? Chains(ExtPubKey receiving, ExtPubKey change) =>
+				P(("receiving", receiving.ToString(network)), ("change", change.ToString(network)));
+			var parameters = P(("network", ToRubyNetwork(network)), ("group_name", name), ("label", label),
+				("type", type), ("threshold", threshold),
+				("signers", signers.Select(s => Chains(s.receiving, s.change)).ToList()),
+				("receiving_path", receivingPath.Indexes.Select(i => (object?)(long)i).ToList()),
+				("change_path", changePath.Indexes.Select(i => (object?)(long)i).ToList()));
+			if (owner != null)
+				parameters["owner"] = Chains(owner.Value.receiving, owner.Value.change);
+			var reply = Call("register_group", parameters, waitsForUser: true);
+			if (reply is not bool ok || !ok)
+				throw new RubyException(RubyException.ProtocolError, "Ruby did not register the group");
+		}
 	}
 }
