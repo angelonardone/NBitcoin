@@ -138,12 +138,12 @@ internal static class MuSig2Tests
 		ContactItem Contact(string name, ExtPubKey account) => new ContactItem
 		{ ContactUserName = name, ExtPubKeyMultiSigReceiving = X(account.Derive(2), net), ExtPubKeyMultiSigChange = X(account.Derive(3), net) };
 
-		// 80: the owner O is software; the members are Ruby, S1 and S2; 2 of 3
-		GroupSDT G80() => new GroupSDT
+		// 80: the owner O is software; the members are Ruby, S1 and S2; 2 of 3 (another owner = another group for Ruby)
+		GroupSDT G80(ExtKey? owner = null) => new GroupSDT
 		{
 			GroupId = Guid.NewGuid(), GroupType = 80, GroupName = "Advanced Delegated room", AmIGroupOwner = false, IsActive = true,
 			MinimumShares = 2,
-			ExtPubKeyMultiSigReceiving = X(o.Derive(2).Neuter(), net), ExtPubKeyMultiSigChange = X(o.Derive(3).Neuter(), net),
+			ExtPubKeyMultiSigReceiving = X((owner ?? o).Derive(2).Neuter(), net), ExtPubKeyMultiSigChange = X((owner ?? o).Derive(3).Neuter(), net),
 			Contact = new List<ContactItem> { Contact("Ruby", rubyT), Contact("S1", s1.Neuter()), Contact("S2", s2.Neuter()) }
 		};
 		// 90: Ruby created it (the "owner", one more signer); S1 and S2; 2 of 3
@@ -179,10 +179,19 @@ internal static class MuSig2Tests
 		string Map(Dictionary<string, string> arrays) =>
 			"{" + string.Join(",", arrays.Select(p => JsonSerializer.Serialize(p.Key) + ":" + p.Value)) + "}";
 
-		// a whole payment: round 1, round 2, finalize, mined
-		void Pay(GroupSDT g, string signersJson, string[] names, string what)
+		// a whole payment: Ruby joins (the group registered then, as the app does at Open room / I'm here), round 1,
+		// round 2 (never a registration: 2026-11-17), finalize, mined. register = false: the registration declined.
+		void Pay(GroupSDT g, string signersJson, string[] names, string what, bool register = true)
 		{
 			var (mp, session) = Session(g, signersJson);
+			if (register && names.Any(IsRuby))
+			{
+				var reg = J(mp.RegisterGroupWithRuby(device, rr, rc, "RegTest"));
+				var status = reg.TryGetProperty("status", out var st) ? st.GetString() ?? "" : "";
+				check($"{what}: the group registered on Ruby when it joins ({status})",
+					reg.GetProperty("success").GetBoolean() && (status == "registered" || status == "already registered"),
+					reg.GetProperty("error").GetString() + " " + status);
+			}
 			var nonces = new Dictionary<string, string>();
 			foreach (var name in names)
 			{
@@ -199,7 +208,11 @@ internal static class MuSig2Tests
 				var r = Partials(mp, session, Map(nonces), name);
 				check($"{what}: {name} round 2", r.GetProperty("success").GetBoolean(), r.GetProperty("error").GetString()!);
 				if (IsRuby(name))
-					uart.Check(check, $"{what}: Ruby recognises the group's change", "group change address validated", true);
+				{
+					uart.Check(check, register ? $"{what}: Ruby recognises the group's change" : $"{what}: not registered, Ruby shows the change",
+						"group change address validated", register);
+					uart.Check(check, $"{what}: round 2 asks no registration", "first address", false);
+				}
 				if (!r.GetProperty("success").GetBoolean()) return;
 				partials[r.GetProperty("signer").GetString()!] = r.GetProperty("partialSignatures").GetString()!;
 			}
@@ -213,6 +226,15 @@ internal static class MuSig2Tests
 		Pay(G80(), "[\"S2\",\"Ruby\"]", new[] { "S2", "Ruby" }, "80 leaf (S2 first, Ruby last)");
 		Pay(G90(), "all", new[] { "owner", "S1", "S2" }, "90 key path (Ruby + S1 + S2)");
 		Pay(G90(), "[\"owner\",\"S2\"]", new[] { "owner", "S2" }, "90 leaf (Ruby + S2)");
+		Pay(G80(new ExtKey().Derive(taproot)), "[\"Ruby\",\"S1\"]", new[] { "Ruby", "S1" }, "80 leaf, group not registered", register: false);
+		{
+			// a Ruby that does not hold the member's keys can not join (round 1 would abort the room)
+			var mp = new MuSig2Processor();
+			mp.FromSDT(G80());
+			var other = new ExtKey().Derive(taproot).Neuter();
+			var reg = J(mp.RegisterGroupWithRuby(device, X(other.Derive(2), net), X(other.Derive(3), net), "RegTest"));
+			check("refusal: a Ruby without the member's keys can not join", !reg.GetProperty("success").GetBoolean(), reg.GetProperty("error").GetString()!);
+		}
 
 		// --- refusals ---
 		{

@@ -103,6 +103,14 @@ namespace DistricutedCryptographyLib
 			return MuSig2GroupSpend.CreateNoncesWithRuby(_group, sessionJson, device, myReceivingExtPubKey, myChangeExtPubKey, networkType);
 		}
 
+		// A Ruby wallet opens a room or presses I'm here: the group registered on Ruby before the room's 3 minutes
+		// ({"success", "error", "status"}); also checks that Ruby is connected, unlocked and holds my keys.
+		public string RegisterGroupWithRuby(string device, string myReceivingExtPubKey, string myChangeExtPubKey,
+			string networkType)
+		{
+			return MuSig2GroupSpend.RegisterGroupWithRuby(_group, device, myReceivingExtPubKey, myChangeExtPubKey, networkType);
+		}
+
 		// Round 2 with a Ruby wallet: Ruby shows the payment and makes my partial signatures (as Sign returns them).
 		public string SignWithRuby(string sessionJson, string publicNoncesJson, string device, string myReceivingExtPubKey,
 			string myChangeExtPubKey, string networkType)

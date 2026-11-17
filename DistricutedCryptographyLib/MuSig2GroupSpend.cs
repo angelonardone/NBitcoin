@@ -552,8 +552,9 @@ namespace DistricutedCryptographyLib
 				{
 					var fingerprint = c.GetMasterFingerprint(net);
 					DelegatedMultiSigSpend.CheckRubyChains(c, net, accountPath, receiving, change, "This Ruby does not hold the keys of this group member");
-					// the group registered on Ruby (asked once, here and never in round 1), so that Ruby does not show the change
-					EnsureRubyGroup(c, group, net, accountPath);
+					// 2026-11-17: the registration is NOT asked here (its screens took the room's 3 minutes): it is asked
+					// when the member opens the room or presses I'm here (RegisterGroupWithRuby). Not registered (declined),
+					// Ruby shows the change.
 					return c.SignPsbt(RubyMuSig2Psbt(group, loaded, receiving, change, fingerprint, accountPath, net, publicNonces));
 				});
 				var partials = new List<byte[]>();
@@ -791,9 +792,38 @@ namespace DistricutedCryptographyLib
 				ownerless ? ((ExtPubKey, ExtPubKey)?)null : (ownerReceiving!, ownerChange!), signers);
 		}
 
+		/// <summary>
+		/// A member whose keys are on Ruby opens a signing room or presses I'm here (2026-11-17): the group is registered
+		/// on Ruby then, before the room's 3 minutes start (see <see cref="EnsureRubyGroup"/>; asked once, an identical
+		/// registration is not asked again). It also checks that this Ruby is connected, unlocked and holds the member's
+		/// keys: without them round 1 would abort the room for everybody.
+		/// Returns {"success": true, "error": "", "status": "registered" | "already registered" | "declined on Ruby" |
+		/// "not registered: ..."}: the member joins in every one of those cases (not registered, Ruby shows the change);
+		/// {"success": false, "error": ...} when Ruby can not be used (not connected, locked, other keys).
+		/// </summary>
+		public static string RegisterGroupWithRuby(GroupSDT group, string device, string myReceivingExtPubKey,
+			string myChangeExtPubKey, string networkType)
+		{
+			try
+			{
+				var net = DelegatedMultiSigSpend.GetNetwork(networkType);
+				var receiving = ExtPubKey.Parse((myReceivingExtPubKey ?? "").Trim(), net);
+				var change = ExtPubKey.Parse((myChangeExtPubKey ?? "").Trim(), net);
+				var accountPath = DelegatedMultiSigSpend.RubyAccountPath(net);
+				var status = RubyProcessor.WithClient(device, c =>
+				{
+					DelegatedMultiSigSpend.CheckRubyChains(c, net, accountPath, receiving, change, "This Ruby does not hold the keys of this group member");
+					return EnsureRubyGroup(c, group, net, accountPath);
+				});
+				return JsonSerializer.Serialize(new { success = true, error = "", status });
+			}
+			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
+		}
+
 		// Registers the MuSig2 group on Ruby once (the user checks it and its first address on Ruby), so that Ruby
-		// recognises the group's change and does not show it. Never in round 1 (it asks the user). A payment goes on in
-		// every case (declined, an older firmware, a group too big for Ruby: Ruby then shows the change).
+		// recognises the group's change and does not show it. Never in round 1 nor round 2 (it asks the user): when the
+		// member joins a room, or in the owner's payment. A payment goes on in every case (declined, an older firmware,
+		// a group too big for Ruby: Ruby then shows the change).
 		internal static string EnsureRubyGroup(RubyClient c, GroupSDT group, Network net, KeyPath accountPath)
 		{
 			try
