@@ -854,10 +854,10 @@ namespace DistricutedCryptographyLib
 			catch (Exception e) { return Err(e); }
 		}
 
-		private static KeyPath RubyAccountPath(Network net) =>
+		internal static KeyPath RubyAccountPath(Network net) =>
 			KeyPath.Parse("m/86'/" + (net.ChainName == ChainName.Mainnet ? "0'" : "1'") + "/0'");
 
-		private static void CheckRubyChains(RubyClient c, Network net, KeyPath accountPath, ExtPubKey receiving,
+		internal static void CheckRubyChains(RubyClient c, Network net, KeyPath accountPath, ExtPubKey receiving,
 			ExtPubKey change, string error)
 		{
 			var account = ExtPubKey.Parse(c.GetXpub(net, accountPath), net);

@@ -277,6 +277,90 @@ namespace DistricutedCryptographyLib
 		}
 
 		/// <summary>
+		/// The owner of a Delegated MultiSig 2 spends alone with a Ruby wallet (2026-11-17): the same transaction as
+		/// <see cref="OwnerSpend"/>, signed on Ruby by the key path exactly as the owner of a Delegated group
+		/// (<see cref="DelegatedMultiSigSpend.OwnerSpendWithRuby"/>): each input carries the owner's internal key with
+		/// its origin (Ruby's fingerprint + m/86'/coin'/0'/{2|3}/sequence) and the merkle root of the MuSig2 leaves,
+		/// which Ruby checks against the coin before it tweaks the key (Ruby firmware df8fcebc). The chain keys given
+		/// (the owner's ExtPubKeyMultiSigReceiving / Change) must be Ruby's m/86'/coin'/0'/2 and /3. The signatures
+		/// that come back are checked by the script interpreter before anything is returned.
+		/// </summary>
+		public static string OwnerSpendWithRuby(GroupSDT group, string utxosJson, string sendTo, string amountBtc,
+			string changeAddr, string feeBtc, bool sendAll, string device, string receivingExtPubKey,
+			string changeExtPubKey, string networkType)
+		{
+			try
+			{
+				if (DelegatedMultiSigSpend.IsOwnerless(group))
+					return DelegatedMultiSigSpend.Err($"A Multi Signature 2 group has no owner: every payment needs {group.MinimumShares} signatures");
+				var net = DelegatedMultiSigSpend.GetNetwork(networkType);
+				var utxos = DelegatedMultiSigSpend.ParseUtxos(utxosJson);
+				var multiSigs = utxos.Select(u => MultiSig(group, u.Sequence, u.IsChange, net)).ToArray();
+				CheckAddresses(utxos, multiSigs);
+				var receiving = ExtPubKey.Parse((receivingExtPubKey ?? "").Trim(), net);
+				var change = ExtPubKey.Parse((changeExtPubKey ?? "").Trim(), net);
+				for (int i = 0; i < utxos.Count; i++)
+				{
+					var chain = utxos[i].IsChange ? change : receiving;
+					if (chain.Derive((uint)utxos[i].Sequence).PubKey != multiSigs[i].OwnerPubKey)
+						return DelegatedMultiSigSpend.Err("The signing key is not the key of the owner of this group");
+				}
+				var fee = Money.Coins(DelegatedMultiSigSpend.ParseDec(feeBtc));
+				if (fee <= Money.Zero)
+					return DelegatedMultiSigSpend.Err("The fee must be greater than zero");
+				var tx = DelegatedMultiSigSpend.BuildTransaction(utxos, sendTo, amountBtc, changeAddr, fee, sendAll, net, "the fee");
+				var spent = utxos.Select((u, i) => new TxOut(Money.Coins(DelegatedMultiSigSpend.ParseDec(u.AmountBtc)), multiSigs[i].Address.ScriptPubKey)).ToArray();
+
+				var accountPath = DelegatedMultiSigSpend.RubyAccountPath(net);
+				var signed = RubyProcessor.WithClient(device, c =>
+				{
+					var fingerprint = c.GetMasterFingerprint(net);
+					DelegatedMultiSigSpend.CheckRubyChains(c, net, accountPath, receiving, change, "This Ruby does not hold the keys of the owner of this group");
+					EnsureRubyGroup(c, group, net, accountPath);
+					var psbt = PSBT.FromTransaction(tx, net);
+					if (tx.Outputs.Count == 2)
+						AddRubyChangeKeyPath(psbt, 1, group, change, fingerprint, accountPath, net);
+					for (int i = 0; i < utxos.Count; i++)
+					{
+						var input = psbt.Inputs[i];
+						input.WitnessUtxo = spent[i];
+						input.TaprootInternalKey = multiSigs[i].InternalKey;
+						input.TaprootMerkleRoot = multiSigs[i].TaprootSpendInfo.MerkleRoot;
+						var path = accountPath.Derive(utxos[i].IsChange ? 3u : 2u).Derive((uint)utxos[i].Sequence);
+						input.HDTaprootKeyPaths[new TaprootPubKey(multiSigs[i].InternalKey.ToBytes())] =
+							new TaprootKeyPath(new RootedKeyPath(fingerprint, path));
+					}
+					return c.SignPsbt(psbt);
+				});
+
+				for (int i = 0; i < utxos.Count; i++)
+				{
+					var signature = signed.Inputs[i].TaprootKeySignature;
+					if (signature == null)
+						return DelegatedMultiSigSpend.Err("Ruby did not sign every input");
+					if (signature.SigHash != TaprootSigHash.Default)
+						return DelegatedMultiSigSpend.Err("Ruby signed with an unexpected sighash");
+					tx.Inputs[i].WitScript = new WitScript(new[] { signature.ToBytes() });
+				}
+				DelegatedMultiSigSpend.Validate(tx, spent);
+				return JsonSerializer.Serialize(new
+				{
+					success = true,
+					error = "",
+					txHex = tx.ToHex(),
+					txId = tx.GetHash().ToString(),
+					feeBtc = (spent.Select(o => o.Value).Sum() - tx.Outputs.Select(o => o.Value).Sum()).ToDecimal(MoneyUnit.BTC),
+					vsize = tx.GetVirtualSize()
+				});
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return DelegatedMultiSigSpend.Err("The payment was declined on Ruby");
+			}
+			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
+		}
+
+		/// <summary>
 		/// The member who starts the payment builds the session once the members present are known
 		/// (<paramref name="signersJson"/>: their user names, exactly k for a leaf; "all" = every signer of a Multi
 		/// Signature 2, by the key path). <paramref name="changeSequence"/>: the sequence of
@@ -405,6 +489,194 @@ namespace DistricutedCryptographyLib
 		}
 
 		/// <summary>
+		/// Round 1 for a member whose keys are on Ruby (2026-11-17): the same as <see cref="CreateNonces"/>, but the
+		/// nonces are made by Ruby, which keeps the SECRET nonces in its own memory (Ruby firmware musig2_nonces,
+		/// RUBY-GROUPS.md 2.4). Nothing is shown on Ruby. <paramref name="myReceivingExtPubKey"/> /
+		/// <paramref name="myChangeExtPubKey"/>: the chain keys the member gave the group (Ruby's m/86'/coin'/0'/2 and
+		/// /3, checked on Ruby).
+		/// </summary>
+		public static string CreateNoncesWithRuby(GroupSDT group, string sessionJson, string device,
+			string myReceivingExtPubKey, string myChangeExtPubKey, string networkType)
+		{
+			try
+			{
+				var net = DelegatedMultiSigSpend.GetNetwork(networkType);
+				var loaded = Load(group, sessionJson, net);
+				var signer = MySignerIndex(loaded, myReceivingExtPubKey, myChangeExtPubKey, net);
+				if (signer < 0 || !loaded.Spend.Signers.Contains(signer))
+					return DelegatedMultiSigSpend.Err("You are not one of the signers of this payment");
+				var receiving = ExtPubKey.Parse(myReceivingExtPubKey.Trim(), net);
+				var change = ExtPubKey.Parse(myChangeExtPubKey.Trim(), net);
+				var accountPath = DelegatedMultiSigSpend.RubyAccountPath(net);
+				var nonces = RubyProcessor.WithClient(device, c =>
+				{
+					var fingerprint = c.GetMasterFingerprint(net);
+					DelegatedMultiSigSpend.CheckRubyChains(c, net, accountPath, receiving, change, "This Ruby does not hold the keys of this group member");
+					return c.Musig2Nonces(RubyMuSig2Psbt(group, loaded, receiving, change, fingerprint, accountPath, net, null));
+				});
+				if (nonces.Any(n => n == null || n.Length != 66))
+					return DelegatedMultiSigSpend.Err("Ruby did not make a nonce for every input");
+				return JsonSerializer.Serialize(new
+				{
+					success = true,
+					error = "",
+					sessionId = loaded.Spend.Id.ToString(),
+					signer = NameOf(loaded, signer),
+					publicNonces = JsonSerializer.Serialize(nonces.Select(n => Encoders.Hex.EncodeData(n)).ToArray())
+				});
+			}
+			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
+		}
+
+		/// <summary>
+		/// Round 2 for a member whose keys are on Ruby: Ruby shows the payment and, when the user accepts it, makes its
+		/// partial signatures with the secret nonces of <see cref="CreateNoncesWithRuby"/> (wiped on Ruby whatever
+		/// happens). Each partial signature is checked here before it is returned.
+		/// Declined on Ruby -> {"success": false, "error": "The payment was declined on Ruby"}.
+		/// </summary>
+		public static string SignWithRuby(GroupSDT group, string sessionJson, string publicNoncesJson, string device,
+			string myReceivingExtPubKey, string myChangeExtPubKey, string networkType)
+		{
+			try
+			{
+				var net = DelegatedMultiSigSpend.GetNetwork(networkType);
+				var loaded = Load(group, sessionJson, net);
+				var signer = MySignerIndex(loaded, myReceivingExtPubKey, myChangeExtPubKey, net);
+				if (signer < 0 || !loaded.Spend.Signers.Contains(signer))
+					return DelegatedMultiSigSpend.Err("You are not one of the signers of this payment");
+				var publicNonces = ParseByName(loaded, publicNoncesJson, "public nonces");
+				var receiving = ExtPubKey.Parse(myReceivingExtPubKey.Trim(), net);
+				var change = ExtPubKey.Parse(myChangeExtPubKey.Trim(), net);
+				var accountPath = DelegatedMultiSigSpend.RubyAccountPath(net);
+				var signed = RubyProcessor.WithClient(device, c =>
+				{
+					var fingerprint = c.GetMasterFingerprint(net);
+					DelegatedMultiSigSpend.CheckRubyChains(c, net, accountPath, receiving, change, "This Ruby does not hold the keys of this group member");
+					// the group registered on Ruby (asked once, here and never in round 1), so that Ruby does not show the change
+					EnsureRubyGroup(c, group, net, accountPath);
+					return c.SignPsbt(RubyMuSig2Psbt(group, loaded, receiving, change, fingerprint, accountPath, net, publicNonces));
+				});
+				var partials = new List<byte[]>();
+				for (int i = 0; i < loaded.Tx.Inputs.Count; i++)
+				{
+					var (_, agg, leaf) = MuSig2InputKeys(loaded, i);
+					var mine = loaded.MultiSigs[i].SignerPubKeys[signer].Compress().ToBytes();
+					if (!signed.Inputs[i].Unknown.TryGetValue(MuSig2FieldKey(PsbtInMuSig2PartialSig, mine, agg, leaf), out var partial) || partial.Length != 32)
+						return DelegatedMultiSigSpend.Err("Ruby did not sign every input");
+					if (!VerifyPartial(loaded, i, signer, publicNonces, partial))
+						return DelegatedMultiSigSpend.Err("Ruby returned an invalid partial signature");
+					partials.Add(partial);
+				}
+				return JsonSerializer.Serialize(new
+				{
+					success = true,
+					error = "",
+					sessionId = loaded.Spend.Id.ToString(),
+					signer = NameOf(loaded, signer),
+					partialSignatures = JsonSerializer.Serialize(partials.Select(p => Encoders.Hex.EncodeData(p)).ToArray())
+				});
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return DelegatedMultiSigSpend.Err("The payment was declined on Ruby");
+			}
+			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
+		}
+
+		// PSBT input fields: BIP371 leaf script, BIP373 MuSig2 participants / public nonce / partial signature (NBitcoin
+		// keeps them among the unknown ones)
+		private const byte PsbtInTapLeafScript = 0x15;
+		private const byte PsbtInMuSig2Participants = 0x1a;
+		private const byte PsbtInMuSig2PubNonce = 0x1b;
+		private const byte PsbtInMuSig2PartialSig = 0x1c;
+
+		// The participants of input i (in KeyAgg order), their plain aggregate key (33 bytes) and the leaf hash (null
+		// for the key path)
+		private static (PubKey[] participants, byte[] agg, byte[]? leaf) MuSig2InputKeys(Loaded loaded, int i)
+		{
+			var ms = loaded.MultiSigs[i];
+			var participants = (loaded.Spend.IsKeyPath ? ((TaprootMultiSig2)ms).AggregatedPubKeys : ms.GetScriptPubKeys(loaded.Spend.ScriptIndex)).ToArray();
+			var agg = NBitcoin.Secp256k1.ECPubKey.MusigAggregate(participants.Select(p => NBitcoin.Secp256k1.ECPubKey.Create(p.Compress().ToBytes())).ToArray()).ToBytes(true);
+			var leaf = loaded.Spend.IsKeyPath ? null : ms.Scripts[loaded.Spend.ScriptIndex].LeafHash.ToBytes();
+			return (participants, agg, leaf);
+		}
+
+		private static byte[] MuSig2FieldKey(byte type, byte[] participant, byte[] agg, byte[]? leaf) =>
+			new[] { type }.Concat(participant).Concat(agg).Concat(leaf ?? Array.Empty<byte>()).ToArray();
+
+		// The payment as Ruby signs it (BIP371 + BIP373): for each input the coin, the participants and their aggregate
+		// key, Ruby's key with its origin, and the leaf with its control block (script path) or the aggregate as the
+		// internal key with the merkle root (key path); in round 2 also every signer's public nonces.
+		private static PSBT RubyMuSig2Psbt(GroupSDT group, Loaded loaded, ExtPubKey receiving, ExtPubKey change, HDFingerprint fingerprint,
+			KeyPath accountPath, Network net, IReadOnlyDictionary<int, IReadOnlyList<byte[]>>? publicNonces)
+		{
+			var psbt = PSBT.FromTransaction(loaded.Tx, net);
+			// the change: Ruby's key and path, so that a group registered on Ruby does not show it
+			if (loaded.Tx.Outputs.Count == 2 && loaded.Session.ChangeSequence >= 0)
+				AddRubyChangeKeyPath(psbt, 1, group, change, fingerprint, accountPath, net, loaded.Session.ChangeSequence);
+			for (int i = 0; i < loaded.Tx.Inputs.Count; i++)
+			{
+				var ms = loaded.MultiSigs[i];
+				var si = loaded.Session.Inputs[i];
+				var input = psbt.Inputs[i];
+				input.WitnessUtxo = loaded.Spent[i];
+				var (participants, agg, leaf) = MuSig2InputKeys(loaded, i);
+				input.Unknown[new[] { PsbtInMuSig2Participants }.Concat(agg).ToArray()] =
+					participants.SelectMany(p => p.Compress().ToBytes()).ToArray();
+				var ours = (si.IsChange ? change : receiving).Derive((uint)si.Sequence).PubKey;
+				var origin = new RootedKeyPath(fingerprint, accountPath.Derive(si.IsChange ? 3u : 2u).Derive((uint)si.Sequence));
+				var oursX = new TaprootPubKey(ours.TaprootInternalKey.ToBytes());
+				if (loaded.Spend.IsKeyPath)
+				{
+					input.TaprootInternalKey = ms.InternalKey;
+					input.TaprootMerkleRoot = ms.TaprootSpendInfo.MerkleRoot;
+					input.HDTaprootKeyPaths[oursX] = new TaprootKeyPath(origin);
+				}
+				else
+				{
+					var script = ms.Scripts[loaded.Spend.ScriptIndex];
+					var control = ms.TaprootSpendInfo.GetControlBlock(script);
+					input.Unknown[new[] { PsbtInTapLeafScript }.Concat(control.ToBytes()).ToArray()] =
+						script.Script.ToBytes().Concat(new[] { (byte)script.Version }).ToArray();
+					input.HDTaprootKeyPaths[oursX] = new TaprootKeyPath(origin, new[] { script.LeafHash });
+				}
+				if (publicNonces != null)
+				{
+					foreach (var s in loaded.Spend.Signers)
+						input.Unknown[MuSig2FieldKey(PsbtInMuSig2PubNonce, ms.SignerPubKeys[s].Compress().ToBytes(), agg, leaf)] = publicNonces[s][i];
+				}
+			}
+			return psbt;
+		}
+
+		// For TestRuby (the firmware's refusals): the PSBT Ruby gets in round 1 (no nonces) or round 2
+		internal static PSBT RubyMuSig2PsbtForTests(GroupSDT group, string sessionJson, string publicNoncesJson,
+			ExtPubKey receiving, ExtPubKey change, HDFingerprint fingerprint, Network net)
+		{
+			var loaded = Load(group, sessionJson, net);
+			var nonces = string.IsNullOrWhiteSpace(publicNoncesJson) ? null : ParseByName(loaded, publicNoncesJson, "public nonces");
+			return RubyMuSig2Psbt(group, loaded, receiving, change, fingerprint, DelegatedMultiSigSpend.RubyAccountPath(net), net, nonces);
+		}
+
+		// BIP327 PartialSigVerify of one signer's partial signature of input i
+		private static bool VerifyPartial(Loaded loaded, int i, int signer, IReadOnlyDictionary<int, IReadOnlyList<byte[]>> publicNonces, byte[] partial)
+		{
+			var ms = loaded.MultiSigs[i];
+			var (participants, _, _) = MuSig2InputKeys(loaded, i);
+			var execution = loaded.Spend.IsKeyPath
+				? new TaprootExecutionData(i) { SigHash = TaprootSigHash.Default }
+				: new TaprootExecutionData(i, ms.Scripts[loaded.Spend.ScriptIndex].LeafHash) { SigHash = TaprootSigHash.Default };
+			var msg = loaded.Tx.GetSignatureHashTaproot(loaded.Spent, execution);
+			var context = new NBitcoin.Secp256k1.Musig.MusigContext(participants.Select(p => NBitcoin.Secp256k1.ECPubKey.Create(p.Compress().ToBytes())).ToArray(), msg.ToBytes());
+			if (loaded.Spend.IsKeyPath)
+				context.Tweak(ms.TaprootSpendInfo.OutputPubKey.Tweak.Span);
+			context.ProcessNonces(loaded.Spend.Signers.Select(s => new NBitcoin.Secp256k1.Musig.MusigPubNonce(publicNonces[s][i])).ToArray());
+			return context.Verify(NBitcoin.Secp256k1.ECPubKey.Create(ms.SignerPubKeys[signer].Compress().ToBytes()),
+				new NBitcoin.Secp256k1.Musig.MusigPubNonce(publicNonces[signer][i]),
+				new NBitcoin.Secp256k1.Musig.MusigPartialSignature(partial));
+		}
+
+		/// <summary>
 		/// Anybody: checks the partial signature of every signer and returns the signed transaction
 		/// (<paramref name="partialSignaturesJson"/> = {"user name": ["hex", ...one per input]}).
 		/// </summary>
@@ -485,6 +757,90 @@ namespace DistricutedCryptographyLib
 				return JsonSerializer.Serialize(new { success = true, error = "", removed });
 			}
 			catch (Exception e) { return DelegatedMultiSigSpend.Err(e); }
+		}
+
+		// ---------------------------------------------------------------------
+		// Ruby: group registration (MuSig2 leaves need Ruby firmware support, phase C of docs/ruby-group-musig2.md)
+		// ---------------------------------------------------------------------
+
+		// The registration of a MuSig2 group on Ruby (Ruby firmware register_group, types "musig2-delegated" and
+		// "musig2-multisig", 2026-11-17): the same keys as the group's addresses; the name is a hash of the group's two
+		// ranged descriptors (BIP390 musig()), as for the Delegated / Multi Signature groups.
+		internal static (string name, string label, string type, int k, (ExtPubKey, ExtPubKey)? owner,
+			List<(ExtPubKey, ExtPubKey)> signers) RubyGroupRecord(GroupSDT group, Network net)
+		{
+			var (ownerReceiving, receiving, k) = Keys(group, false, net);
+			var (ownerChange, change, _) = Keys(group, true, net);
+			// the same participant on both chains (by his place in the contact list; -1 = the owner of a Multi Signature 2)
+			var receivingByPosition = DelegatedMultiSigSpend.MemberXpubs(group, false).ToDictionary(m => m.position, m => ExtPubKey.Parse(m.xpub, net));
+			var changeByPosition = DelegatedMultiSigSpend.MemberXpubs(group, true).ToDictionary(m => m.position, m => ExtPubKey.Parse(m.xpub, net));
+			if (receivingByPosition.Count != changeByPosition.Count || receivingByPosition.Keys.Any(p => !changeByPosition.ContainsKey(p)))
+				throw new Exception("Every participant needs a receiving and a change extended public key");
+			var signers = receivingByPosition.Keys.OrderBy(p => p).Select(p => (receivingByPosition[p], changeByPosition[p])).ToList();
+
+			var ownerless = ownerReceiving == null;
+			var descriptors = ownerless
+				? TaprootMultiSig2.GetRangedDescriptor(receiving, k, net) + "|" + TaprootMultiSig2.GetRangedDescriptor(change, k, net)
+				: DelegatedMultiSig2.GetRangedDescriptor(ownerReceiving!, receiving, k, net) + "|" + DelegatedMultiSig2.GetRangedDescriptor(ownerChange!, change, k, net);
+			var hash = NBitcoin.Crypto.Hashes.SHA256(System.Text.Encoding.UTF8.GetBytes(descriptors));
+			var name = "dc" + Encoders.Hex.EncodeData(hash).Substring(0, 13);
+			var label = new string((group.GroupName ?? "").Trim().Where(ch => ch >= 32 && ch < 127).Take(40).ToArray());
+			if (label.Length == 0)
+				label = name;
+			return (name, label, ownerless ? "musig2-multisig" : "musig2-delegated", k,
+				ownerless ? ((ExtPubKey, ExtPubKey)?)null : (ownerReceiving!, ownerChange!), signers);
+		}
+
+		// Registers the MuSig2 group on Ruby once (the user checks it and its first address on Ruby), so that Ruby
+		// recognises the group's change and does not show it. Never in round 1 (it asks the user). A payment goes on in
+		// every case (declined, an older firmware, a group too big for Ruby: Ruby then shows the change).
+		internal static string EnsureRubyGroup(RubyClient c, GroupSDT group, Network net, KeyPath accountPath)
+		{
+			try
+			{
+				var record = RubyGroupRecord(group, net);
+				if (c.GetRegisteredGroups().ContainsKey(record.name))
+					return "already registered";
+				c.RegisterGroup(net, record.name, record.label, record.type, record.k, record.owner, record.signers,
+					accountPath.Derive(2), accountPath.Derive(3));
+				return "registered";
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return "declined on Ruby";
+			}
+			catch (RubyException e)
+			{
+				return "not registered: " + e.Message;
+			}
+		}
+
+		// How far the change chain is searched for the index of a change address given only as an address
+		private const int RubyChangeSearchLimit = 2000;
+
+		// Ruby recognises the group's change only through Ruby's own key in that output (BIP371
+		// PSBT_OUT_TAP_BIP32_DERIVATION: the key and its origin m/86'/coin'/0'/3/i; no leaf hashes: Ruby's key is not
+		// itself in a MuSig2 leaf). changeSequence < 0: the index is searched on the group's change chain.
+		internal static void AddRubyChangeKeyPath(PSBT psbt, int outputIndex, GroupSDT group, ExtPubKey rubyChange,
+			HDFingerprint fingerprint, KeyPath accountPath, Network net, int changeSequence = -1)
+		{
+			if (outputIndex < 0 || outputIndex >= psbt.Outputs.Count)
+				return;
+			var script = psbt.Outputs[outputIndex].ScriptPubKey;
+			var first = changeSequence >= 0 ? changeSequence : 0;
+			var last = changeSequence >= 0 ? changeSequence : RubyChangeSearchLimit - 1;
+			for (int sequence = first; sequence <= last; sequence++)
+			{
+				var ms = MultiSig(group, sequence, true, net);
+				if (ms.Address.ScriptPubKey != script)
+					continue;
+				var pubKey = rubyChange.Derive((uint)sequence).PubKey;
+				if (!(ms.HasOwner && pubKey == ms.OwnerPubKey) && IndexOf(ms.SignerPubKeys, pubKey) < 0)
+					return;
+				psbt.Outputs[outputIndex].HDTaprootKeyPaths[new TaprootPubKey(pubKey.TaprootInternalKey.ToBytes())] =
+					new TaprootKeyPath(new RootedKeyPath(fingerprint, accountPath.Derive(3).Derive((uint)sequence)));
+				return;
+			}
 		}
 
 		// ---------------------------------------------------------------------

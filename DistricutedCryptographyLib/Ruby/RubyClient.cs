@@ -377,6 +377,20 @@ namespace DistricutedCryptographyLib
 			}
 		}
 
+		/// <summary>
+		/// MuSig2 round 1 (Ruby firmware 2026-11-17, RUBY-GROUPS.md 2.4): Ruby checks the MuSig2 inputs of the payment
+		/// (BIP373 participants, its key, the leaf or the internal key) and makes its nonces without asking anything.
+		/// The secret nonces stay on Ruby for the sign_psbt of the same payment (round 2, where the user accepts it).
+		/// Returns one entry per input: Ruby's 66-byte public nonce, or an empty array for an input Ruby does not sign.
+		/// </summary>
+		public IList<byte[]> Musig2Nonces(PSBT psbt)
+		{
+			var reply = Call("musig2_nonces", P(("network", ToRubyNetwork(psbt.Network)), ("psbt", psbt.ToBytes())));
+			if (reply is not IList<object?> list || list.Count != psbt.Inputs.Count || list.Any(o => o is not byte[]))
+				throw new RubyException(RubyException.ProtocolError, "Invalid musig2_nonces reply");
+			return list.Cast<byte[]>().ToList();
+		}
+
 		public PSBT SignPsbt(PSBT psbt)
 		{
 			var network = psbt.Network;

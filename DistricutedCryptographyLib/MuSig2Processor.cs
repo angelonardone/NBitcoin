@@ -58,6 +58,15 @@ namespace DistricutedCryptographyLib
 			return MuSig2GroupSpend.OwnerSpend(_group, utxosJson, sendTo, amountBtc, changeAddr, feeBtc, sendAll, receivingExtPrivKey, changeExtPrivKey, networkType);
 		}
 
+		// The owner of a Delegated MultiSig 2 whose keys are on Ruby spends alone: Ruby signs by the key path.
+		// receivingExtPubKey / changeExtPubKey: the chain keys the owner gave the group (Ruby's m/86'/coin'/0'/2 and /3).
+		public string OwnerSpendWithRuby(string utxosJson, string sendTo, string amountBtc, string changeAddr,
+			string feeBtc, bool sendAll, string device, string receivingExtPubKey, string changeExtPubKey,
+			string networkType)
+		{
+			return MuSig2GroupSpend.OwnerSpendWithRuby(_group, utxosJson, sendTo, amountBtc, changeAddr, feeBtc, sendAll, device, receivingExtPubKey, changeExtPubKey, networkType);
+		}
+
 		// The session of a payment, built once the members present are known (signersJson = ["user", ...] or "all").
 		public string BuildSession(string utxosJson, string sendTo, string amountBtc, string changeAddr,
 			int changeSequence, string feeBtc, bool sendAll, string signersJson, string networkType)
@@ -84,6 +93,21 @@ namespace DistricutedCryptographyLib
 			string changeExtPrivKey, string networkType)
 		{
 			return MuSig2GroupSpend.Sign(_group, sessionJson, publicNoncesJson, receivingExtPrivKey, changeExtPrivKey, networkType);
+		}
+
+		// Round 1 with a Ruby wallet (no screen): Ruby makes my nonces and keeps the secret ones; the public ones are
+		// returned as CreateNonces returns them. myReceivingExtPubKey / myChangeExtPubKey: Ruby's chain keys in the group.
+		public string CreateNoncesWithRuby(string sessionJson, string device, string myReceivingExtPubKey,
+			string myChangeExtPubKey, string networkType)
+		{
+			return MuSig2GroupSpend.CreateNoncesWithRuby(_group, sessionJson, device, myReceivingExtPubKey, myChangeExtPubKey, networkType);
+		}
+
+		// Round 2 with a Ruby wallet: Ruby shows the payment and makes my partial signatures (as Sign returns them).
+		public string SignWithRuby(string sessionJson, string publicNoncesJson, string device, string myReceivingExtPubKey,
+			string myChangeExtPubKey, string networkType)
+		{
+			return MuSig2GroupSpend.SignWithRuby(_group, sessionJson, publicNoncesJson, device, myReceivingExtPubKey, myChangeExtPubKey, networkType);
 		}
 
 		// Anybody: checks every partial signature and returns the signed transaction.

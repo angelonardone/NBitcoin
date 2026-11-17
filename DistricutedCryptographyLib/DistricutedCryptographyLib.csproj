@@ -9,6 +9,13 @@
   <ItemGroup>
     <!-- Ruby hardware key over USB serial on Windows; same version as System.IO.Ports.dll in the KB (File DistributedCryptographyLib.SystemIOPorts, the Windows build; Linux and macOS use RubyUnixSerialTransport) -->
     <PackageReference Include="System.IO.Ports" Version="8.0.0" />
+    <!-- MuSig2 with Ruby (2026-11-17): the public BIP327 API (aggregate key, partial signature check); NBitcoin keeps its own copy internal. Same version as NBitcoin.Secp256k1.dll already in the KB (web/bin) -->
+    <PackageReference Include="NBitcoin.Secp256k1" Version="3.1.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- TestRuby checks the firmware's refusals with PSBTs built by the library -->
+    <InternalsVisibleTo Include="TestRuby" />
   </ItemGroup>
 
   <ItemGroup>

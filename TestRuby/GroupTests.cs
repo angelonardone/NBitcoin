@@ -95,6 +95,12 @@ internal static class GroupTests
 			RunGroupRegistration(device, mnemonic, net, rpc, ruby, dest, check);
 			return;
 		}
+		// TESTRUBY_GROUPS=musig2: only the MuSig2 group tests (MuSig2Tests)
+		if (Environment.GetEnvironmentVariable("TESTRUBY_GROUPS") == "musig2")
+		{
+			MuSig2Tests.Run(device, mnemonic, net, rpc, ruby, dest, check);
+			return;
+		}
 
 		// 1. software A starts with +10 % / +50 %, Ruby is the last signer and chooses +50 %
 		{
@@ -667,7 +673,7 @@ internal static class GroupTests
 	// The firmware log: a firmware built with --log-cbor sends its log lines over the RPC connection, and RubyClient
 	// passes them to its Log callback. Mark() remembers where the log is, Check() looks only at what came after.
 	// With a firmware without logs the checks are skipped.
-	private sealed class FirmwareLog
+	internal sealed class FirmwareLog
 	{
 		private readonly System.Text.StringBuilder _log = new System.Text.StringBuilder();
 		private int _mark;
@@ -690,6 +696,9 @@ internal static class GroupTests
 		}
 
 		public void Mark() => _mark = Log().Length;
+
+		// every log line containing the text (eg. the firmware's measurements)
+		public IEnumerable<string> Lines(string text) => Log().Split('\n').Where(l => l.Contains(text)).Select(l => l.Trim());
 
 		public void Check(Action<string, bool, string> check, string what, string text, bool expected)
 		{
