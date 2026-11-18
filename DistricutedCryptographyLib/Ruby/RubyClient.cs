@@ -340,6 +340,27 @@ namespace DistricutedCryptographyLib
 		}
 
 		/// <summary>
+		/// The BIP85 child seed number index (12 or 24 English words) of the wallet on Ruby. Ruby asks on its screen
+		/// ("Key Export ... for BIP85 index N?") and hands the entropy ECDH-encrypted to a one-time key made here.
+		/// The same index always gives the same words; they reveal nothing of Ruby's seed.
+		/// </summary>
+		public Mnemonic GetBip85Mnemonic(int numWords, uint index)
+		{
+			RubyBip85.CheckParameters(numWords, index);
+			using var hostKey = new Key();
+			var reply = Call("get_bip85_bip39_entropy",
+				P(("num_words", (long)numWords), ("index", (long)index), ("pubkey", hostKey.PubKey.ToBytes())),
+				waitsForUser: true) as IDictionary<string, object?>
+				?? throw new RubyException(RubyException.ProtocolError, "Invalid get_bip85_bip39_entropy reply");
+
+			if (!reply.TryGetValue("pubkey", out var pk) || pk is not byte[] devicePub
+				|| !reply.TryGetValue("encrypted", out var enc) || enc is not byte[] encrypted)
+				throw new RubyException(RubyException.ProtocolError, "Invalid get_bip85_bip39_entropy reply");
+
+			return RubyBip85.FromEncrypted(hostKey, new PubKey(devicePub), encrypted, numWords);
+		}
+
+		/// <summary>
 		/// Ruby signs the inputs of the PSBT that belong to its wallet (by master fingerprint and key path) after the
 		/// user confirms the outputs and the fee on the device. Returns the PSBT with the signatures added.
 		/// </summary>

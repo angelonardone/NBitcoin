@@ -53,6 +53,7 @@ if (device != "offline")
 {
 	DeviceTests(device);
 	KbFlowTests.Run(device, TestMnemonic, Check); // after DeviceTests closed its connection
+	ChildMnemonicProcessorTests(device);
 }
 
 Console.WriteLine(failures == 0 ? "ALL PASS" : $"{failures} FAILED");
@@ -119,6 +120,35 @@ void OfflineTests()
 			&& keys.ExtendedPrivateKeys.Count == 6
 			&& keys.ExtendedPrivateKeys.Distinct().Count() == 6);
 	}
+
+	// BIP85 child seeds (hot wallets): the test vector of the BIP (BIP39, English, 12 words, index 0)
+	var bip85Master = ExtKey.Parse(
+		"xprv9s21ZrQH143K2LBWUUQRFXhucrQqBpKdRRxNVq2zBqsx8HVqFk2uYo8kmbaLLHRdqtQpUm98uKfu3vca1LqdGhUtyoFnCNkfmXRyPXLjbKb",
+		Network.Main);
+	var vector = RubyBip85.ChildMnemonic(bip85Master, 12, 0).ToString();
+	Check("bip85 test vector (12 words, index 0)",
+		vector == "girl mad pet galaxy egg matter matrix prison refuse sense ordinary nose", vector);
+	Check("bip85 24 words", RubyBip85.ChildMnemonic(bip85Master, 24, 0).Words.Length == 24);
+	Check("bip85 other index, other words",
+		RubyBip85.ChildMnemonic(bip85Master, 12, 1).ToString() != vector);
+	Throws<ArgumentException>("bip85 18 words refused", () => RubyBip85.ChildMnemonic(bip85Master, 18, 0));
+}
+
+// The KB entry point (EO RubyProcessor.GetChildMnemonic): its own connection, so after the others closed theirs
+void ChildMnemonicProcessorTests(string dev)
+{
+	Console.WriteLine("== hot wallets (RubyProcessor)");
+	using (var ruby = RubyClient.Connect(dev))
+		ruby.DebugSetMnemonic(TestMnemonic);
+	var processor = new RubyProcessor();
+	var json = System.Text.Json.JsonDocument.Parse(processor.GetChildMnemonic(dev, 2)).RootElement;
+	Check("RubyProcessor.GetChildMnemonic = from the words",
+		json.GetProperty("success").GetBoolean()
+		&& json.GetProperty("mnemonic").GetString() == RubyBip85.ChildMnemonic(TestMnemonic, 12, 2).ToString());
+	var bad = System.Text.Json.JsonDocument.Parse(processor.GetChildMnemonic(dev, -1)).RootElement;
+	Check("RubyProcessor.GetChildMnemonic negative index refused", !bad.GetProperty("success").GetBoolean(),
+		bad.GetProperty("error").GetString() ?? "");
+	RubyProcessor.Disconnect(dev);
 }
 
 void DeviceTests(string dev)
@@ -146,6 +176,16 @@ void DeviceTests(string dev)
 		Check($"account xpub ({net})",
 			ruby.GetAccountXpub(net).ToString(net)
 			== master.Derive(RubyUtilityKeys.AccountPath(net)).Neuter().ToString(net));
+	}
+
+	// BIP85 child seeds from Ruby = the software derivation from the words (the CI firmware confirms by itself)
+	ruby.DebugSetMnemonic(TestMnemonic);
+	foreach (var (words, index) in new[] { (12, 0u), (12, 1u), (12, 7u), (24, 3u) })
+	{
+		var fromRuby = ruby.GetBip85Mnemonic(words, index).ToString();
+		var expected = RubyBip85.ChildMnemonic(TestMnemonic, words, index).ToString();
+		Check($"bip85 child from Ruby = from the words ({words} words, index {index})", fromRuby == expected,
+			string.Join(' ', fromRuby.Split(' ').Take(3)) + "...");
 	}
 
 	// A different mnemonic gives different keys (the keys really come from the device seed)

@@ -352,6 +352,33 @@ namespace DistricutedCryptographyLib
 			}
 		}
 
+		/// <summary>
+		/// The words of the hot wallet number index (BIP85 child seed, 12 English words) of the wallet on Ruby: Ruby
+		/// asks on its screen first. {"success", "error", "mnemonic", "cancelled"}. Only for the server: the words
+		/// go straight into the new software wallet, never to the page.
+		/// </summary>
+		public string GetChildMnemonic(string device, int index)
+		{
+			if (index < 0)
+				return Err("The hot wallet number must be 0 or more");
+			try
+			{
+				return WithClient(device, c =>
+				{
+					var words = c.GetBip85Mnemonic(12, checked((uint)index)).ToString();
+					return Ok(new { success = true, error = "", mnemonic = words, cancelled = false });
+				});
+			}
+			catch (RubyException e) when (e.Code == RubyException.UserCancelled)
+			{
+				return Ok(new { success = false, error = "Declined on Ruby", mnemonic = "", cancelled = true });
+			}
+			catch (Exception e)
+			{
+				return Err(e.Message);
+			}
+		}
+
 		// ---------------------------------------------------------------- signing
 
 		private sealed class InputDto
