@@ -234,6 +234,46 @@ var cases = new List<object>();
 	Check(shares[0].Length == 127, "a 64-byte seed share has 127 characters");
 }
 
+// ---- Codex32Processor: the JSON API the KB calls ----
+{
+	var p = new Codex32Processor();
+	var seed = Hex(RandomUtils.GetBytes(64));
+	using var split = JsonDocument.Parse(p.SplitSeed(seed, 3, 5));
+	var root = split.RootElement;
+	Check(root.GetProperty("success").GetBoolean() && root.GetProperty("shares").GetArrayLength() == 5 && root.GetProperty("identifier").GetString()!.Length == 4, "processor SplitSeed 3-of-5");
+	var shares = root.GetProperty("shares").EnumerateArray().Select(e => e.GetString()!).ToList();
+	using var comb = JsonDocument.Parse(p.CombineSeed(JsonSerializer.Serialize(new[] { shares[4], shares[1], shares[2] })));
+	Check(comb.RootElement.GetProperty("success").GetBoolean() && comb.RootElement.GetProperty("seed").GetString() == seed, "processor CombineSeed of e, c, d");
+	string ErrorOf(string json) { using var d = JsonDocument.Parse(json); return d.RootElement.GetProperty("success").GetBoolean() ? "" : d.RootElement.GetProperty("error").GetString()!; }
+	foreach (var (json, what) in new[]
+	{
+		(p.CombineSeed(JsonSerializer.Serialize(shares.Take(2))), "2 shares of 3"),
+		(p.CombineSeed("not json"), "not JSON"),
+		(p.CombineSeed("[]"), "no shares"),
+		(p.SplitSeed("", 2, 3), "empty seed (a Ruby wallet has none on the computer)"),
+		(p.SplitSeed("zz", 2, 3), "seed not hex"),
+		(p.SplitSeed(seed, 1, 3), "minimum 1"),
+		(p.SplitSeed(seed, 2, 32), "32 shares"),
+		(p.UnmaskSeed(seed, seed[..64]), "vault parts of different lengths"),
+	})
+	{
+		var e = ErrorOf(json);
+		Check(e.Length > 0, $"processor refuses {what}: {e}");
+	}
+	using var mask = JsonDocument.Parse(p.MaskSeed(seed));
+	var pad = mask.RootElement.GetProperty("pad").GetString()!;
+	var masked = mask.RootElement.GetProperty("masked").GetString()!;
+	Check(pad != seed && masked != seed && pad.Length == seed.Length, "processor MaskSeed: neither part is the seed");
+	using var unmask = JsonDocument.Parse(p.UnmaskSeed(pad, masked));
+	Check(unmask.RootElement.GetProperty("seed").GetString() == seed, "processor UnmaskSeed gives the seed back");
+	// TEV end to end: pad split 2-of-3 among the restore group, combined, unmasked with the masked part
+	using var tev = JsonDocument.Parse(p.SplitSeed(pad, 2, 3));
+	var tevShares = tev.RootElement.GetProperty("shares").EnumerateArray().Select(e => e.GetString()!).ToList();
+	using var padBack = JsonDocument.Parse(p.CombineSeed(JsonSerializer.Serialize(new[] { tevShares[2], tevShares[0] })));
+	using var seedBack = JsonDocument.Parse(p.UnmaskSeed(padBack.RootElement.GetProperty("seed").GetString()!, masked));
+	Check(seedBack.RootElement.GetProperty("seed").GetString() == seed, "TEV: pad from 2 of 3 members + masked part = seed");
+}
+
 if (args.Length >= 2 && args[0] == "cases")
 {
 	File.WriteAllText(args[1], JsonSerializer.Serialize(cases));
