@@ -132,10 +132,29 @@ internal static class OracleTests
 			ruby.AuthUser(Network.TestNet) && oracle.LastResult == "set_pin" && oracle.RecordCount == 1, oracle.LastResult);
 		check("state READY", State() == "READY", State());
 		check("Ruby asks the wallet oracle (one url, no server)", oracleUrl == RubyClient.WalletOracleUrl + "/set_pin", oracleUrl ?? "");
+		// SLIP-13 identity keys derive from the BIP32 SEED: they tell whether Ruby holds its seed
+		byte[]? IdentityKey()
+		{
+			try
+			{
+				return ruby.Call("get_identity_pubkey", new System.Collections.Generic.Dictionary<string, object?>
+				{
+					["identity"] = "ssh://ruby@seed.test", ["curve"] = "nist256p1", ["type"] = "slip-0013",
+				}) as byte[];
+			}
+			catch (RubyException) { return null; }
+		}
+		var identityBefore = IdentityKey();
+		check("the seed is there after the words (identity key)", identityBefore?.Length == 65, "");
 
 		ruby.Logout();
 		check("logout locks", State() == "LOCKED", State());
 		check("unlock with the PIN (get_pin)", ruby.AuthUser(Network.TestNet) && oracle.LastResult == "get_pin", oracle.LastResult);
+		// Since 2026-11-20 Ruby stores the seed (not the xpriv): it is back after the PIN unlock
+		var identityAfter = IdentityKey();
+		check("the seed is persisted: same identity key after the PIN unlock",
+			identityAfter != null && identityBefore != null && identityAfter.SequenceEqual(identityBefore),
+			identityAfter == null ? "no seed after unlock" : "");
 		var master = new Mnemonic(mnemonic).DeriveExtKey();
 		check("the persisted wallet is the mnemonic",
 			ruby.GetMasterFingerprint(Network.TestNet) == master.GetPublicKey().GetHDFingerPrint(), "");
